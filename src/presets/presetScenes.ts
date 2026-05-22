@@ -176,9 +176,7 @@ machineGear3.geoms.push({
   pos: [0.52, 0.0, 0.14], // relative offset placed outside the gear disc (0.52 > 0.40) and high enough to clear the shelf top
   rgba: [0.9, 0.2, 0.2, 1],
   mass: 0.05,
-  condim: 3,
-  solref: [0.015, 1.0],
-  solimp: [0.95, 0.99, 0.001, 0.5, 2]
+  condim: 3
 });
 
 const machineShelf: SceneNode = {
@@ -217,9 +215,7 @@ const machineBlock: SceneNode = {
       rgba: [0.95, 0.8, 0.25, 1],
       mass: 0.1,
       condim: 3,
-      friction: [0.1, 0.005, 0.0005],
-      solref: [0.015, 1.0],
-      solimp: [0.95, 0.99, 0.001, 0.5, 2]
+      friction: [0.1, 0.005, 0.0005]
     }
   ],
   children: []
@@ -324,9 +320,7 @@ const rackBlock: SceneNode = {
       rgba: [0.95, 0.8, 0.25, 1],
       mass: 0.1,
       condim: 3,
-      friction: [0.1, 0.005, 0.0005],
-      solref: [0.015, 1.0],
-      solimp: [0.95, 0.99, 0.001, 0.5, 2]
+      friction: [0.1, 0.005, 0.0005]
     }
   ],
   children: []
@@ -338,6 +332,228 @@ export const rackPinionPreset: SceneGraph = {
     rackNode,
     rackShelf,
     rackBlock
+  ]
+};
+
+export const inclinedPlanePreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'inclined_wedge',
+      name: 'inclined_wedge',
+      type: 'body',
+      pos: [0, 0, 0],
+      isWedge: true,
+      width: 3.0,
+      depth: 1.2,
+      height: 1.0,
+      wedgeAngle: 18.435,
+      geoms: [
+        {
+          name: 'wedge_geom',
+          type: 'box',
+          size: [1.581, 0.6, 0.025],
+          rgba: [0.8, 0.5, 0.2, 1],
+          mass: 50,
+          condim: 3,
+          friction: [0.2, 0.005, 0.0005]
+        }
+      ],
+      joints: [],
+      children: []
+    },
+    {
+      id: 'sliding_cube',
+      name: 'sliding_cube',
+      type: 'body',
+      pos: [-1.0, 0, 1.3],
+      geoms: [
+        {
+          name: 'sliding_cube_geom',
+          type: 'box',
+          size: [0.2, 0.2, 0.2],
+          rgba: [0.95, 0.8, 0.2, 1],
+          mass: 2.0,
+          condim: 3,
+          friction: [0.1, 0.005, 0.0005]
+        }
+      ],
+      joints: [
+        { name: 'sliding_cube_free', type: 'free' }
+      ],
+      children: []
+    }
+  ]
+};
+
+export const pulleySystemPreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'pulley_support',
+      name: 'pulley_support',
+      type: 'body',
+      pos: [0, 0, 0],
+      geoms: [
+        {
+          name: 'support_column',
+          type: 'capsule',
+          fromto: [0, 0, 0, 0, 0, 1.8],
+          size: [0.05],
+          rgba: [0.4, 0.4, 0.4, 1]
+        },
+        {
+          name: 'support_peg',
+          type: 'capsule',
+          fromto: [0, 0, 1.6, 0, -0.35, 1.6],
+          size: [0.03],
+          rgba: [0.3, 0.3, 0.3, 1]
+        }
+      ],
+      joints: [],
+      children: []
+    },
+    {
+      id: 'pulley_wheel',
+      name: 'pulley_wheel',
+      type: 'body',
+      pos: [0, -0.3, 1.6],
+      isPulleyWheel: true,
+      pulleyRadius: 0.4,
+      geoms: [
+        { name: 'pulley_wheel_spindle', type: 'cylinder', size: [0.32, 0.03], pos: [0, 0, 0], euler: [90, 0, 0], rgba: [0.3, 0.4, 0.6, 1], mass: 0.5 },
+        { name: 'pulley_wheel_flange_l', type: 'cylinder', size: [0.4, 0.01], pos: [0, -0.04, 0], euler: [90, 0, 0], rgba: [0.2, 0.3, 0.5, 1], mass: 0.25 },
+        { name: 'pulley_wheel_flange_r', type: 'cylinder', size: [0.4, 0.01], pos: [0, 0.04, 0], euler: [90, 0, 0], rgba: [0.2, 0.3, 0.5, 1], mass: 0.25 }
+      ],
+      joints: [
+        { name: 'pulley_wheel_hinge', type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.2 }
+      ],
+      children: []
+    },
+    {
+      id: 'left_weight',
+      name: 'left_weight',
+      type: 'body',
+      pos: [-0.4, -0.3, 0.8],
+      geoms: [
+        {
+          name: 'left_weight_geom',
+          type: 'box',
+          size: [0.15, 0.15, 0.15],
+          rgba: [0.2, 0.6, 1.0, 1],
+          mass: 5.0,
+          condim: 3
+        }
+      ],
+      joints: [
+        { name: 'left_weight_joint', type: 'slide', axis: [0, 0, 1], damping: 1.0 }
+      ],
+      children: []
+    },
+    {
+      id: 'right_weight',
+      name: 'right_weight',
+      type: 'body',
+      pos: [0.4, -0.3, 0.8],
+      geoms: [
+        {
+          name: 'right_weight_geom',
+          type: 'box',
+          size: [0.15, 0.15, 0.15],
+          rgba: [0.95, 0.8, 0.2, 1],
+          mass: 3.0,
+          condim: 3
+        }
+      ],
+      joints: [
+        { name: 'right_weight_joint', type: 'slide', axis: [0, 0, 1], damping: 1.0 }
+      ],
+      children: []
+    },
+    {
+      id: 'pulley_rope_preset',
+      name: 'pulley_rope_preset',
+      type: 'body',
+      pos: [0, 0, 0],
+      isPulleyRope: true,
+      pulleyWheelId: 'pulley_wheel',
+      leftTargetId: 'left_weight',
+      rightTargetId: 'right_weight',
+      geoms: [],
+      joints: [],
+      children: []
+    }
+  ]
+};
+
+export const cartpolePreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'rail',
+      name: 'rail',
+      type: 'body',
+      pos: [0, 0, 1.0],
+      joints: [],
+      geoms: [
+        {
+          name: 'rail_geom',
+          type: 'cylinder',
+          size: [0.015], // 3cm diameter
+          rgba: [0.3, 0.35, 0.4, 0.5], // semi-transparent slate
+          fromto: [-2.0, 0, 0, 2.0, 0, 0], // horizontal slider rail along X
+          contype: 0,
+          conaffinity: 0
+        }
+      ],
+      children: []
+    },
+    {
+      id: 'cart',
+      name: 'cart',
+      type: 'body',
+      pos: [0, 0, 1.0],
+      joints: [
+        { name: 'cart_slide', type: 'slide', axis: [1, 0, 0], damping: 1.0, limited: true, range: [-2.0, 2.0] }
+      ],
+      geoms: [
+        {
+          name: 'cart_geom',
+          type: 'box',
+          size: [0.25, 0.18, 0.12], // cart dimensions
+          rgba: [0.15, 0.5, 0.85, 1], // vibrant premium blue
+          mass: 2.0,
+          condim: 3
+        }
+      ],
+      children: [
+        {
+          id: 'pole',
+          name: 'pole',
+          type: 'body',
+          pos: [0, 0, 0.12], // hinge sits on top of cart
+          joints: [
+            { name: 'pole_hinge', type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.05 }
+          ],
+          geoms: [
+            {
+              name: 'pole_rod_geom',
+              type: 'capsule',
+              fromto: [0, 0, 0, 0, 0, 0.7],
+              size: [0.018],
+              rgba: [0.65, 0.65, 0.65, 1],
+              mass: 0.2
+            },
+            {
+              name: 'pole_weight_geom',
+              type: 'sphere',
+              pos: [0, 0, 0.7],
+              size: [0.06], // spherical tip weight
+              rgba: [0.85, 0.25, 0.25, 1], // crimson tip
+              mass: 0.6
+            }
+          ],
+          children: []
+        }
+      ]
+    }
   ]
 };
 
@@ -361,5 +577,17 @@ export const PRESETS = {
   rack_pinion: {
     name: 'Rack and Pinion Converter',
     scene: rackPinionPreset
+  },
+  inclined_plane: {
+    name: 'Inclined Plane',
+    scene: inclinedPlanePreset
+  },
+  pulley_system: {
+    name: 'Pulley System Stand',
+    scene: pulleySystemPreset
+  },
+  cartpole: {
+    name: 'Cartpole System',
+    scene: cartpolePreset
   }
 };

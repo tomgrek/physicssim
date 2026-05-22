@@ -34,6 +34,10 @@ const buildJoint = (joint: SceneJoint) => {
 };
 
 const buildNode = (node: SceneNode): string => {
+  // Logical-only nodes (e.g. pulley ropes) have no geoms or joints and must not
+  // emit a <body> into MJCF — a bodyless body causes implicit inertia artefacts.
+  if (node.isPulleyRope) return '';
+
   let innerXml = '';
   
   node.joints.forEach(j => innerXml += buildJoint(j));
@@ -51,6 +55,32 @@ const buildNode = (node: SceneNode): string => {
 };
 
 export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floorFriction: number = 1.0) => {
+  const sceneCopy = JSON.parse(JSON.stringify(scene)) as SceneGraph;
+  
+  const preprocessNodes = (nodes: SceneNode[]) => {
+    if (!nodes) return;
+    for (const node of nodes) {
+      if (node.isWedge) {
+        const w = node.width || 2.0;
+        const h = node.height || 0.5;
+        const d = node.depth || 1.0;
+        const L = Math.sqrt(w * w + h * h);
+        const theta = node.wedgeAngle !== undefined ? node.wedgeAngle : (Math.atan(h / w) * 180 / Math.PI);
+        
+        if (node.geoms && node.geoms.length > 0) {
+          node.geoms[0].size = [L / 2, d / 2, 0.025];
+        }
+        node.euler = [0, theta, 0];
+        
+        // Dynamically lift the Z position of the wedge so its base is perfectly flush with the ground plane
+        const zOffset = h / 2;
+        node.pos[2] += zOffset;
+      }
+      preprocessNodes(node.children);
+    }
+  };
+  preprocessNodes(sceneCopy.nodes);
+
   const actuators: SceneJoint[] = [];
   let pinionJoint: string | null = null;
   let rackJoint: string | null = null;
@@ -71,12 +101,13 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
       getAbsolutePositions(node.children, worldPos);
     }
   };
-  getAbsolutePositions(scene.nodes);
+  getAbsolutePositions(sceneCopy.nodes);
 
   // Keep track of gear joints along with their absolute position and size
   const gearJointNodes: { jointName: string; nodeId: string; pos: [number, number, number]; radius: number }[] = [];
   const jointedNodes: Record<string, string> = {};
   const explicitCouplingNodes: SceneNode[] = [];
+  const pulleyRopesList: SceneNode[] = [];
 
   const traverse = (nodes: SceneNode[]) => {
     for (const node of nodes) {
@@ -85,6 +116,9 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
       }
       if (node.coupleTargetId) {
         explicitCouplingNodes.push(node);
+      }
+      if (node.isPulleyRope) {
+        pulleyRopesList.push(node);
       }
 
       const couplingAllowed = node.allowCoupling !== false;
@@ -109,7 +143,7 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
       traverse(node.children);
     }
   };
-  traverse(scene.nodes);
+  traverse(sceneCopy.nodes);
 
   const actuatorsXml = actuators.map((j) => {
     const act = j.actuator!;
@@ -180,6 +214,43 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
     }
   }
 
+  // 3. Pulley Rope Joint Couplings
+  let ropeCouplingIndex = 1;
+  for (const rope of pulleyRopesList) {
+    const { pulleyWheelId, leftTargetId, rightTargetId } = rope;
+    if (leftTargetId && rightTargetId) {
+      const leftJoint = jointedNodes[leftTargetId];
+      const rightJoint = jointedNodes[rightTargetId];
+      
+      if (leftJoint && rightJoint) {
+        // Linear coupling between weights: ratio is -1.0 (as one goes down, other goes up)
+        equalityConstraints += `\n    <joint name="rope_coupling_linear_${ropeCouplingIndex}" joint1="${leftJoint}" joint2="${rightJoint}" polycoef="0 -1 0 0 0" />`;
+        
+        // Couple pulley wheel Hinge rotation with the Left weight slide joint
+        if (pulleyWheelId) {
+          const wheelJoint = jointedNodes[pulleyWheelId];
+          if (wheelJoint) {
+            // Find the pulley wheel node to get its radius
+            const findWheel = (nodes: SceneNode[]): SceneNode | null => {
+              for (const n of nodes) {
+                if (n.id === pulleyWheelId) return n;
+                const found = findWheel(n.children);
+                if (found) return found;
+              }
+              return null;
+            };
+            const wheelNode = findWheel(sceneCopy.nodes);
+            const radius = wheelNode?.pulleyRadius || 0.4;
+            
+            // theta = x / radius -> angularRot = linearPos / radius
+            equalityConstraints += `\n    <joint name="rope_coupling_angular_${ropeCouplingIndex}" joint1="${leftJoint}" joint2="${wheelJoint}" polycoef="0 ${1.0 / radius} 0 0 0" />`;
+          }
+        }
+      }
+    }
+    ropeCouplingIndex++;
+  }
+
   if (equalityConstraints) {
     equalityXml = `\n  <equality>${equalityConstraints}\n  </equality>`;
   }
@@ -187,11 +258,14 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
   return `
 <mujoco model="dynamic_scene">
   <option timestep="0.001" gravity="0 0 ${gravityZ}" />
+  <default>
+    <geom solref="-1000 -100" solimp="0.95 0.99 0.001 0.5 2" />
+  </default>
   <worldbody>
     <light directional="true" pos="-0.5 0.5 3" dir="0.5 -0.5 -3" diffuse="0.8 0.8 0.8" />
-    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.9 0.9 0.9 1" friction="${floorFriction} 0.005 0.0001" />
+    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.9 0.9 0.9 1" friction="${floorFriction} 0.005 0.0001" solref="-1000 0" solimp="0.95 0.99 0.001 0.5 2" />
     
-    ${scene.nodes.map(buildNode).join('\n')}
+    ${sceneCopy.nodes.map(buildNode).join('\n')}
   </worldbody>
 ${actuators.length > 0 ? `  <actuator>\n${actuatorsXml}\n  </actuator>` : ''}${equalityXml}
 </mujoco>

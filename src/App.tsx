@@ -3,7 +3,8 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useStore } from './store/useStore';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info } from 'lucide-react';
+import type { SceneNode } from './types/scene';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
@@ -31,6 +32,23 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
     
     for (let i = 0; i < stepsNeeded; i++) {
       try {
+        // Reset and apply mouse drag forces if active
+        data.xfrc_applied.fill(0);
+        const { draggedNodeId, dragTarget } = useStore.getState();
+        if (draggedNodeId && dragTarget) {
+          const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, draggedNodeId);
+          if (bId !== -1) {
+            const bx = data.xpos[bId * 3];
+            const by = data.xpos[bId * 3 + 1];
+            const bz = data.xpos[bId * 3 + 2];
+            
+            // Proportional spring force (k = 250.0)
+            data.xfrc_applied[bId * 6 + 0] = 250.0 * (dragTarget.x - bx);
+            data.xfrc_applied[bId * 6 + 1] = 250.0 * (dragTarget.y - by);
+            data.xfrc_applied[bId * 6 + 2] = 250.0 * (dragTarget.z - bz);
+          }
+        }
+        
         mujoco.mj_step(model, data);
         
         // Safety check for NaN values in positions
@@ -82,22 +100,31 @@ const CameraController = () => {
     camera.updateProjectionMatrix();
   }, [cameraView, camera]);
 
-  return <OrbitControls ref={controlsRef} makeDefault enableDamping dampingFactor={0.1} mouseButtons={{ LEFT: 99 as any, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }} />;
+  const draggedNodeId = useStore((state) => state.draggedNodeId);
+  return <OrbitControls enabled={draggedNodeId === null} ref={controlsRef} makeDefault enableDamping dampingFactor={0.1} mouseButtons={{ LEFT: 99 as any, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }} />;
 };
 
 // Drop Handler for precise spawning
-const DropHandler = ({ addComponent }: { addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear', pos: [number, number, number]) => void }) => {
+const DropHandler = ({ addComponent }: { addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope', pos: [number, number, number]) => void }) => {
   const { camera } = useThree();
   
   useEffect(() => {
     const handler = (e: DragEvent) => {
       e.preventDefault();
-      const type = e.dataTransfer?.getData('type') as 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear';
+      const type = e.dataTransfer?.getData('type') as 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope';
       if (!type) return;
       
+      const canvasEl = document.querySelector('canvas');
+      let rect = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      if (canvasEl) {
+        rect = canvasEl.getBoundingClientRect();
+      }
+      const xLocal = e.clientX - rect.left;
+      const yLocal = e.clientY - rect.top;
+
       const vec = new THREE.Vector3(
-        (e.clientX / window.innerWidth) * 2 - 1,
-        -(e.clientY / window.innerHeight) * 2 + 1,
+        (xLocal / rect.width) * 2 - 1,
+        -(yLocal / rect.height) * 2 + 1,
         0.5
       );
       vec.unproject(camera);
@@ -135,9 +162,86 @@ const DropHandler = ({ addComponent }: { addComponent: (type: 'box' | 'sphere' |
 };
 
 
+// Custom Triangular Prism Wedge Geometry
+const WedgeGeometry = ({ width = 2.0, depth = 1.0, height = 0.5 }: { width: number; depth: number; height: number }) => {
+  const vertices = useMemo(() => {
+    const L = Math.sqrt(width * width + height * height);
+    const D = depth;
+    const cosTheta = width / L;
+    const H_local = height / cosTheta;
+    const halfL = L / 2;
+    const halfD = D / 2;
+
+    // 6 Vertices of the pre-tilted solid wedge prism:
+    // T0, T1, T2, T3 (top slanted face at z = 0)
+    // B0, B1 (bottom back vertices at z = -H_local so that base becomes perfectly horizontal after -theta rotation)
+    return new Float32Array([
+      -halfL, -halfD, 0,          // 0: T0
+       halfL, -halfD, 0,          // 1: T1
+       halfL,  halfD, 0,          // 2: T2
+      -halfL,  halfD, 0,          // 3: T3
+      -halfL, -halfD, -H_local,   // 4: B0
+      -halfL,  halfD, -H_local    // 5: B1
+    ]);
+  }, [width, depth, height]);
+
+  const indices = useMemo(() => {
+    return new Uint16Array([
+      // Slanted Top Face (looking up)
+      0, 2, 1,
+      0, 3, 2,
+      // Bottom Face (looking down)
+      1, 5, 4,
+      1, 2, 5,
+      // Back Vertical Wall (looking left)
+      0, 4, 5,
+      0, 5, 3,
+      // Front Triangle side (y = -halfD, looking front)
+      0, 1, 4,
+      // Back Triangle side (y = halfD, looking back)
+      3, 5, 2
+    ]);
+  }, []);
+
+  const geomRef = useRef<THREE.BufferGeometry>(null);
+  useEffect(() => {
+    if (geomRef.current) {
+      geomRef.current.computeVertexNormals();
+    }
+  }, [vertices]);
+
+  return (
+    <bufferGeometry ref={geomRef}>
+      <bufferAttribute
+        attach="attributes-position"
+        args={[vertices, 3]}
+      />
+      <bufferAttribute
+        attach="index"
+        args={[indices, 1]}
+      />
+    </bufferGeometry>
+  );
+};
+
+
 // Dynamic Geom Renderer
 const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedNodeId, setSelectedNodeId }: any) => {
   const meshRef = useRef<THREE.Group>(null);
+  const isPlaying = useStore(state => state.isPlaying);
+  
+  const node = useStore(state => {
+    const find = (nodes: any[]): any => {
+      if (!nodes) return null;
+      for (const n of nodes) {
+        if (n.id === nodeId) return n;
+        const c = find(n.children);
+        if (c) return c;
+      }
+      return null;
+    };
+    return find(state.sceneGraph.nodes);
+  });
   
   const geomId = useMemo(() => {
     if (!model || !mujoco) return -1;
@@ -169,6 +273,48 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
 
   const rotationMatrix = useMemo(() => new THREE.Matrix4(), []);
   const isSelected = selectedNodeId === nodeId;
+
+  // Handlers for physical spring dragging, mapped from Three.js coordinates to MuJoCo coordinate space
+  const dragHandlers = useMemo(() => ({
+    onClick: (e: any) => {
+      e.stopPropagation();
+      setSelectedNodeId(nodeId);
+    },
+    onPointerDown: (e: any) => {
+      if (isPlaying) {
+        e.stopPropagation();
+        useStore.getState().setDraggedNodeId(nodeId);
+        useStore.getState().setDragDistance(e.distance);
+        
+        const pt = e.point;
+        // Transform standard Three.js world coordinates (Y-up) to MuJoCo coordinate space (Z-up)
+        useStore.getState().setDragTarget({ x: pt.x, y: -pt.z, z: pt.y });
+        try {
+          (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        } catch (err) {}
+      }
+    },
+    onPointerUp: (e: any) => {
+      if (useStore.getState().draggedNodeId === nodeId) {
+        e.stopPropagation();
+        try {
+          (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch (err) {}
+        useStore.getState().setDraggedNodeId(null);
+        useStore.getState().setDragTarget(null);
+      }
+    },
+    onPointerCancel: (e: any) => {
+      if (useStore.getState().draggedNodeId === nodeId) {
+        e.stopPropagation();
+        try {
+          (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch (err) {}
+        useStore.getState().setDraggedNodeId(null);
+        useStore.getState().setDragTarget(null);
+      }
+    }
+  }), [isPlaying, nodeId, setSelectedNodeId]);
 
   // Compute initial position and rotation from the model/data
   const [initialPos, initialQuat] = useMemo(() => {
@@ -238,31 +384,31 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
       ref={meshRef}
       position={initialPos}
       quaternion={new THREE.Quaternion(...initialQuat)}
-      onClick={(e) => {
-        e.stopPropagation();
-        setSelectedNodeId(nodeId);
-      }}
     >
-      {type === 'sphere' && (
-        <mesh castShadow receiveShadow>
+      {node?.isWedge ? (
+        <mesh castShadow receiveShadow {...dragHandlers}>
+          <WedgeGeometry width={node.width || 2.0} depth={node.depth || 1.0} height={node.height || 0.5} />
+          <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
+        </mesh>
+      ) : type === 'sphere' ? (
+        <mesh castShadow receiveShadow {...dragHandlers}>
           <sphereGeometry args={geometryArgs as any} />
           <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
         </mesh>
-      )}
-      {type === 'box' && (
-        <mesh castShadow receiveShadow>
+      ) : type === 'box' ? (
+        <mesh castShadow receiveShadow {...dragHandlers}>
           <boxGeometry args={geometryArgs as any} />
           <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
         </mesh>
-      )}
+      ) : null}
       {type === 'capsule' && (
-        <mesh castShadow receiveShadow rotation={[Math.PI / 2, 0, 0]}>
+        <mesh castShadow receiveShadow rotation={[Math.PI / 2, 0, 0]} {...dragHandlers}>
           <capsuleGeometry args={geometryArgs as any} />
           <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
         </mesh>
       )}
       {type === 'cylinder' && (
-        <mesh castShadow receiveShadow rotation={[Math.PI / 2, 0, 0]}>
+        <mesh castShadow receiveShadow rotation={[Math.PI / 2, 0, 0]} {...dragHandlers}>
           <cylinderGeometry args={[geometryArgs[0], geometryArgs[0], geometryArgs[1] * 2, 32]} />
           <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
         </mesh>
@@ -270,6 +416,298 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
     </group>
   );
 };
+
+// Dynamic glowing pulley cable/rope renderer
+const PulleyRopesRenderer = ({ model, data, mujoco, sceneGraph }: any) => {
+  const lineRefs = useRef<{ [ropeId: string]: any }>({});
+  
+  // Find all pulley rope nodes in the scene
+  const pulleyRopes = useMemo(() => {
+    const ropes: any[] = [];
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return;
+      for (const n of nodes) {
+        if (n.isPulleyRope && n.leftTargetId && n.rightTargetId) {
+          ropes.push(n);
+        }
+        traverse(n.children);
+      }
+    };
+    traverse(sceneGraph.nodes);
+    return ropes;
+  }, [sceneGraph]);
+
+  // Helper to find wheel node radius reactively
+  const findWheelNode = useCallback((wheelId: string) => {
+    const traverse = (nodes: any[]): any => {
+      if (!nodes) return null;
+      for (const n of nodes) {
+        if (n.id === wheelId) return n;
+        const c = traverse(n.children);
+        if (c) return c;
+      }
+      return null;
+    };
+    return traverse(sceneGraph.nodes);
+  }, [sceneGraph]);
+
+  useFrame(() => {
+    const activeModel = useStore.getState().model;
+    const activeData = useStore.getState().data;
+    if (model !== activeModel || data !== activeData) return;
+    if ((window as any).DISABLE_USEFRAME) return;
+    if (!model || !data || !mujoco) return;
+
+    for (const rope of pulleyRopes) {
+      try {
+        const leftId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, rope.leftTargetId);
+        const rightId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, rope.rightTargetId);
+
+        if (leftId === -1 || rightId === -1) continue;
+
+        const lx = data.xpos[leftId * 3];
+        const ly = data.xpos[leftId * 3 + 1];
+        const lz = data.xpos[leftId * 3 + 2];
+
+        const rx = data.xpos[rightId * 3];
+        const ry = data.xpos[rightId * 3 + 1];
+        const rz = data.xpos[rightId * 3 + 2];
+
+        const points: THREE.Vector3[] = [];
+
+        if (rope.pulleyWheelId) {
+          // Pulley wheel present: arc-over-wheel geometry
+          const wheelId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, rope.pulleyWheelId);
+          if (wheelId === -1) {
+            // Wheel not yet spawned — fall back to straight line
+            points.push(new THREE.Vector3(lx, ly, lz));
+            points.push(new THREE.Vector3(rx, ry, rz));
+          } else {
+            const wx = data.xpos[wheelId * 3];
+            const wy = data.xpos[wheelId * 3 + 1];
+            const wz = data.xpos[wheelId * 3 + 2];
+            const wheelNode = findWheelNode(rope.pulleyWheelId);
+            const rad = wheelNode?.pulleyRadius || 0.4;
+
+            points.push(new THREE.Vector3(lx, ly, lz + 0.15));
+            points.push(new THREE.Vector3(wx - rad, wy, wz));
+            const segments = 12;
+            for (let i = 1; i < segments; i++) {
+              const phi = Math.PI - (Math.PI * i) / segments;
+              points.push(new THREE.Vector3(
+                wx + rad * Math.cos(phi),
+                wy,
+                wz + rad * Math.sin(phi)
+              ));
+            }
+            points.push(new THREE.Vector3(wx + rad, wy, wz));
+            points.push(new THREE.Vector3(rx, ry, rz + 0.15));
+          }
+        } else {
+          // No wheel — straight rope between the two bodies
+          points.push(new THREE.Vector3(lx, ly, lz));
+          points.push(new THREE.Vector3(rx, ry, rz));
+        }
+
+        const line = lineRefs.current[rope.id];
+        if (line) {
+          line.geometry.setFromPoints(points);
+        }
+      } catch (e) {
+        // Safe check
+      }
+    }
+  });
+
+  if (pulleyRopes.length === 0) return null;
+
+  return (
+    <>
+      {pulleyRopes.map((rope) => (
+        <line key={rope.id} ref={(el) => { lineRefs.current[rope.id] = el; }}>
+          <bufferGeometry />
+          <lineBasicMaterial color="#3b82f6" linewidth={3.5} transparent opacity={0.9} />
+        </line>
+      ))}
+    </>
+  );
+};
+
+
+// Drag interaction controller that handles window-level mouse/pointer movements
+const DragInteractionController = () => {
+  const { camera, raycaster, gl } = useThree();
+  
+  useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      const { draggedNodeId, dragDistance } = useStore.getState();
+      if (!draggedNodeId) return;
+
+      // Project mouse screen coordinates relative to canvas bounding client rect
+      const rect = gl.domElement.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const ndcX = (x / rect.width) * 2 - 1;
+      const ndcY = -(y / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+      
+      const targetPt = new THREE.Vector3();
+      raycaster.ray.at(dragDistance, targetPt);
+
+      // Transform standard Three.js world coordinates (Y-up) to MuJoCo coordinate space (Z-up)
+      useStore.getState().setDragTarget({
+        x: targetPt.x,
+        y: -targetPt.z,
+        z: targetPt.y
+      });
+    };
+
+    const handlePointerUp = () => {
+      const { draggedNodeId } = useStore.getState();
+      if (draggedNodeId) {
+        useStore.getState().setDraggedNodeId(null);
+        useStore.getState().setDragTarget(null);
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [camera, raycaster, gl]);
+
+  return null;
+};
+
+
+// Real-time mouse drag physical spring force line renderer
+const MouseDragForceRenderer = ({ model, data, mujoco }: any) => {
+  const draggedNodeId = useStore((state) => state.draggedNodeId);
+  const dragTarget = useStore((state) => state.dragTarget);
+  const lineRef = useRef<any>(null);
+
+  useFrame(() => {
+    const activeModel = useStore.getState().model;
+    const activeData = useStore.getState().data;
+    if (model !== activeModel || data !== activeData) return;
+    if ((window as any).DISABLE_USEFRAME) return;
+    if (!model || !data || !mujoco || !draggedNodeId || !dragTarget || !lineRef.current) return;
+
+    try {
+      const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, draggedNodeId);
+      if (bId === -1) return;
+
+      const px = data.xpos[bId * 3];
+      const py = data.xpos[bId * 3 + 1];
+      const pz = data.xpos[bId * 3 + 2];
+
+      const points = [
+        new THREE.Vector3(px, py, pz),
+        new THREE.Vector3(dragTarget.x, dragTarget.y, dragTarget.z)
+      ];
+      lineRef.current.geometry.setFromPoints(points);
+    } catch (e) {
+      // Safe check
+    }
+  });
+
+  if (!draggedNodeId || !dragTarget) return null;
+
+  return (
+    <line ref={lineRef}>
+      <bufferGeometry />
+      <lineBasicMaterial color="#f43f5e" linewidth={4} transparent opacity={0.9} />
+    </line>
+  );
+};
+
+// Rope node placeholder marker – renders a glowing ring for each pulley_rope scene node
+const PulleyRopeMarkers = ({ sceneGraph, selectedNodeId, setSelectedNodeId }: any) => {
+  const isPlaying = useStore(state => state.isPlaying);
+
+  const ropeNodes = useMemo(() => {
+    const ropes: any[] = [];
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return;
+      for (const n of nodes) {
+        if (n.isPulleyRope) ropes.push(n);
+        traverse(n.children);
+      }
+    };
+    traverse(sceneGraph.nodes);
+    return ropes;
+  }, [sceneGraph]);
+
+  if (ropeNodes.length === 0) return null;
+
+  return (
+    <>
+      {ropeNodes.map((rope) => {
+        // pos is [x, y_mujoco, z_mujoco] in scene graph space.
+        // The SceneVisuals group is rotated [-PI/2, 0, 0], so we skip that rotation
+        // and place markers in raw world space (no group rotation wrapper here).
+        // MuJoCo X→Three.js X, MuJoCo Y→Three.js -Z, MuJoCo Z→Three.js Y
+        const [mx, my, mz] = rope.pos;
+        const threePos: [number, number, number] = [mx, mz, -my];
+        const isSelected = selectedNodeId === rope.id;
+
+        return (
+          <group key={rope.id} position={threePos}>
+            {/* Outer glowing torus ring */}
+            <mesh
+              rotation={[Math.PI / 2, 0, 0]}
+              onClick={(e: any) => { e.stopPropagation(); setSelectedNodeId(rope.id); }}
+              onPointerDown={(e: any) => {
+                if (isPlaying) {
+                  e.stopPropagation();
+                  useStore.getState().setDraggedNodeId(rope.id);
+                  useStore.getState().setDragDistance(e.distance);
+                  const pt = e.point;
+                  useStore.getState().setDragTarget({ x: pt.x, y: -pt.z, z: pt.y });
+                }
+              }}
+              onPointerUp={(e: any) => {
+                if (useStore.getState().draggedNodeId === rope.id) {
+                  e.stopPropagation();
+                  useStore.getState().setDraggedNodeId(null);
+                  useStore.getState().setDragTarget(null);
+                }
+              }}
+            >
+              <torusGeometry args={[0.18, 0.035, 12, 40]} />
+              <meshStandardMaterial
+                color={isSelected ? '#60a5fa' : '#10b981'}
+                emissive={isSelected ? '#3b82f6' : '#047857'}
+                emissiveIntensity={isSelected ? 0.8 : 0.4}
+                transparent
+                opacity={0.92}
+              />
+            </mesh>
+            {/* Small inner dot */}
+            <mesh rotation={[Math.PI / 2, 0, 0]}>
+              <torusGeometry args={[0.07, 0.025, 8, 24]} />
+              <meshStandardMaterial
+                color={isSelected ? '#93c5fd' : '#6ee7b7'}
+                emissive={isSelected ? '#93c5fd' : '#6ee7b7'}
+                emissiveIntensity={0.5}
+                transparent
+                opacity={0.85}
+              />
+            </mesh>
+          </group>
+        );
+      })}
+    </>
+  );
+};
+
 
 const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSelectedNodeId }: any) => {
   const geoms = useMemo(() => {
@@ -308,6 +746,8 @@ const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSele
           setSelectedNodeId={setSelectedNodeId}
         />
       ))}
+      <PulleyRopesRenderer model={model} data={data} mujoco={mujoco} sceneGraph={sceneGraph} />
+      <MouseDragForceRenderer model={model} data={data} mujoco={mujoco} />
     </group>
   );
 };
@@ -331,7 +771,9 @@ function App() {
     updateNodeGeom, updateNodeJoint, updateGearTeeth, addComponent, loadPreset, updateScene,
     resetSimulation, updateNodePos,
     updateNodeJointsList, deleteNode, renameNode,
-    addPusherPeg, deletePusherPeg, updatePusherPeg, updateNodeRotation
+    addPusherPeg, deletePusherPeg, updatePusherPeg, updateNodeRotation,
+    updateWedgeParams, updatePulleyParams, updateRopeParams,
+    parentUnderSelected, setParentUnderSelected
   } = useStore();
 
   // Helper to find a node by ID in hierarchy
@@ -363,6 +805,34 @@ function App() {
     return null;
   }, []);
 
+  const allPulleyWheels = useMemo(() => {
+    const list: any[] = [];
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return;
+      for (const n of nodes) {
+        if (n.isPulleyWheel) list.push(n);
+        traverse(n.children);
+      }
+    };
+    traverse(sceneGraph.nodes);
+    return list;
+  }, [sceneGraph]);
+
+  const allJointedNodes = useMemo(() => {
+    const list: any[] = [];
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return;
+      for (const n of nodes) {
+        if (n.joints && n.joints.length > 0 && !n.isPulleyWheel) {
+          list.push(n);
+        }
+        traverse(n.children);
+      }
+    };
+    traverse(sceneGraph.nodes);
+    return list;
+  }, [sceneGraph]);
+
   const handlePointerMissed = useCallback(() => setSelectedNodeId(null), [setSelectedNodeId]);
 
   console.log("App rendering, selectedNodeId:", selectedNodeId);
@@ -391,10 +861,17 @@ function App() {
   const handleMove = (axis: 0 | 1 | 2, val: number) => {
     if (!selectedNode) return;
     const cleanVal = isNaN(val) ? 0 : val;
-    
-    if (isPlaying) {
-      if (!model || !mujoco || !data) return;
-      // Mutate active physics WASM memory directly
+
+    // Always update the scene-graph initial position (persists on reset/restart)
+    const currentPos = [...selectedNode.pos] as [number, number, number];
+    currentPos[axis] = cleanVal;
+    updateNodePos(selectedNode.id, currentPos);
+
+    // Also directly write to qpos so only THIS body moves in the live sim,
+    // regardless of whether playing or paused. This avoids the full forceReset
+    // recompile (from updateNodePos alone) which was snapping all other bodies
+    // back to their initial positions.
+    if (model && mujoco && data) {
       const jointId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, `${selectedNode.id}_free`);
       if (jointId !== -1) {
         const adr = model.jnt_qposadr[jointId];
@@ -405,15 +882,10 @@ function App() {
         // Force propagation to update positions in 3D visually
         mujoco.mj_forward(model, data);
       }
-    } else {
-      // Edit initial position in the scene graph (Zustand store) when paused
-      const currentPos = [...selectedNode.pos] as [number, number, number];
-      currentPos[axis] = cleanVal;
-      updateNodePos(selectedNode.id, currentPos);
     }
   };
 
-  const handleAddComponentClick = (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear') => {
+  const handleAddComponentClick = (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope') => {
     if (selectedNodeId) {
       const parentNode = findNodeById(sceneGraph.nodes, selectedNodeId);
       if (parentNode) {
@@ -436,6 +908,9 @@ function App() {
     else if (node.id.includes('bob')) emoji = '🔵';
     else if (node.id.includes('cylinder')) emoji = '🛢️';
     else if (node.id.includes('sphere')) emoji = '🟢';
+    else if (node.id.includes('wedge')) emoji = '📐';
+    else if (node.id.includes('pulley_wheel')) emoji = '🛞';
+    else if (node.isPulleyRope) emoji = '🧵';
 
     return (
       <div key={node.id} className="flex flex-col">
@@ -479,6 +954,9 @@ function App() {
               <option value="gears">Gear System</option>
               <option value="machine">Gear Train Machine</option>
               <option value="rack_pinion">Rack and Pinion Converter</option>
+              <option value="inclined_plane">Inclined Plane</option>
+              <option value="pulley_system">Pulley System Stand</option>
+              <option value="cartpole">Cartpole System</option>
             </select>
           </div>
 
@@ -584,9 +1062,21 @@ function App() {
           <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
             <span>Components</span>
           </h2>
-          <div className="text-[11px] font-medium text-slate-500 mb-3 bg-slate-100/80 px-2 py-1.5 rounded-lg border border-slate-200/50">
-            Adding to: <span className="text-blue-600 font-semibold">{selectedNode ? selectedNode.name : '🌍 Worldbody'}</span>
+          <div className="text-[11px] font-medium text-slate-500 mb-2 bg-slate-100/80 px-2 py-1.5 rounded-lg border border-slate-200/50">
+            Adding to: <span className="text-blue-600 font-semibold">{selectedNode && parentUnderSelected ? selectedNode.name : '🌍 Worldbody'}</span>
           </div>
+
+          {selectedNode && (
+            <label className="text-[11px] font-semibold text-slate-600 flex items-center gap-2 mb-3 bg-slate-50 border border-slate-200/60 p-2 rounded-lg cursor-pointer select-none hover:bg-slate-100/50 transition-colors shadow-sm">
+              <input 
+                type="checkbox" 
+                checked={parentUnderSelected} 
+                onChange={(e) => setParentUnderSelected(e.target.checked)} 
+                className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-400 accent-blue-500 cursor-pointer"
+              />
+              <span>Nest under selected</span>
+            </label>
+          )}
 
           <div className="flex flex-col gap-2.5">
             <div 
@@ -666,6 +1156,45 @@ function App() {
                 <span className="text-[10px] text-slate-400">Cogs with square teeth</span>
               </div>
             </div>
+
+            <div 
+              draggable 
+              onDragStart={(e) => handleDragStart(e, 'wedge')} 
+              onClick={() => handleAddComponentClick('wedge')}
+              className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
+            >
+              <Triangle className="w-4 h-4 text-amber-600 rotate-90 group-hover:scale-110 transition-transform" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-700">Wedge</span>
+                <span className="text-[10px] text-slate-400">Procedural inclined plane</span>
+              </div>
+            </div>
+
+            <div 
+              draggable 
+              onDragStart={(e) => handleDragStart(e, 'pulley_wheel')} 
+              onClick={() => handleAddComponentClick('pulley_wheel')}
+              className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
+            >
+              <Disc className="w-4 h-4 text-cyan-600 group-hover:spin transition-transform" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-700">Pulley Wheel</span>
+                <span className="text-[10px] text-slate-400">Pulley stand system disk</span>
+              </div>
+            </div>
+
+            <div 
+              draggable 
+              onDragStart={(e) => handleDragStart(e, 'pulley_rope')} 
+              onClick={() => handleAddComponentClick('pulley_rope')}
+              className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
+            >
+              <CircleDot className="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-700">Rope</span>
+                <span className="text-[10px] text-slate-400">Couples two bodies together</span>
+              </div>
+            </div>
           </div>
         </aside>
 
@@ -708,7 +1237,15 @@ function App() {
               />
             )}
             
+            {/* Rope markers rendered in raw world space (no coordinate system rotation) */}
+            <PulleyRopeMarkers
+              sceneGraph={sceneGraph}
+              selectedNodeId={selectedNodeId}
+              setSelectedNodeId={setSelectedNodeId}
+            />
+            
             <CameraController />
+            <DragInteractionController />
           </Canvas>
         </main>
 
@@ -803,34 +1340,49 @@ function App() {
               {/* Position Coordinates (Applicable to all nodes!) */}
               <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
                 <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2">Position Offset</h3>
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-slate-500 flex items-center justify-between">X Position
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-500 flex items-center justify-between font-medium">X Position
+                      <span>{selectedNode.pos[0].toFixed(2)} m</span>
+                    </label>
                     <input 
-                      type="number" 
-                      step="0.1" 
-                      className="w-20 px-1.5 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm outline-none focus:border-blue-500" 
+                      type="range" 
+                      min="-10" 
+                      max="10" 
+                      step="0.05" 
+                      className="w-full accent-blue-500 cursor-pointer" 
                       value={selectedNode.pos[0]} 
                       onChange={(e) => handleMove(0, parseFloat(e.target.value))} 
                     />
-                  </label>
-                  <label className="text-xs text-slate-500 flex items-center justify-between">Y Position
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-500 flex items-center justify-between font-medium">Y Position
+                      <span>{selectedNode.pos[1].toFixed(2)} m</span>
+                    </label>
                     <input 
-                      type="number" 
-                      step="0.1" 
-                      className="w-20 px-1.5 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm outline-none focus:border-blue-500" 
+                      type="range" 
+                      min="-10" 
+                      max="10" 
+                      step="0.05" 
+                      className="w-full accent-blue-500 cursor-pointer" 
                       value={selectedNode.pos[1]} 
                       onChange={(e) => handleMove(1, parseFloat(e.target.value))} 
                     />
-                  </label>
-                  <label className="text-xs text-slate-500 flex items-center justify-between">Z Position
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs text-slate-500 flex items-center justify-between font-medium">Z Position (Height)
+                      <span>{selectedNode.pos[2].toFixed(2)} m</span>
+                    </label>
                     <input 
-                      type="number" 
-                      step="0.1" 
-                      className="w-20 px-1.5 py-1 border border-slate-200 rounded text-slate-700 font-medium text-sm outline-none focus:border-blue-500" 
+                      type="range" 
+                      min="0" 
+                      max="10" 
+                      step="0.05" 
+                      className="w-full accent-blue-500 cursor-pointer" 
                       value={selectedNode.pos[2]} 
                       onChange={(e) => handleMove(2, parseFloat(e.target.value))} 
                     />
-                  </label>
+                  </div>
                   <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
                     <label className="text-xs text-slate-500 flex items-center justify-between font-medium">X Rotation
                       <span>{(selectedNode.euler ? selectedNode.euler[0] : 0).toFixed(0)}°</span>
@@ -983,16 +1535,93 @@ function App() {
                 );
               })()}
 
-              {/* Damping and Actuator Target Speed properties */}
+              {/* Damping, Limits, and Actuator Target Speed properties */}
               {selectedNode.joints?.map((joint: any, i: number) => (
                 <div key={`joint-${i}`} className="flex flex-col gap-4">
                   {joint.damping !== undefined && (
                     <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
-                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">🔗 Joint Damping</h3>
+                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
+                        <span>🔗 Joint Damping</span>
+                      </h3>
                       <label className="text-xs font-medium text-slate-500 flex justify-between">Damping <span>{joint.damping}</span></label>
                       <input type="range" min="0" max="100" step="0.1" value={joint.damping} onChange={(e) => updateNodeJoint(selectedNode.id, {damping: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
                     </div>
                   )}
+
+                  {(joint.type === 'hinge' || joint.type === 'slide') && (
+                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
+                        <span>🔒 Joint Limits</span>
+                      </h3>
+                      
+                      <label className="text-xs font-semibold text-slate-500 flex items-center gap-2 cursor-pointer py-1">
+                        <input 
+                          type="checkbox" 
+                          checked={joint.limited === true || joint.limited === 'true'}
+                          onChange={(e) => {
+                            const enabled = e.target.checked;
+                            const defaultRange = joint.type === 'slide' ? [-1.0, 1.0] : [-90, 90];
+                            updateNodeJoint(selectedNode.id, { 
+                              limited: enabled,
+                              range: enabled ? (joint.range || defaultRange) : undefined
+                            });
+                          }}
+                          className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
+                        />
+                        Enable Range Limits
+                      </label>
+
+                      {(joint.limited === true || joint.limited === 'true') && (() => {
+                        const range = joint.range || (joint.type === 'slide' ? [-1.0, 1.0] : [-90, 90]);
+                        const isSlide = joint.type === 'slide';
+                        const minVal = range[0];
+                        const maxVal = range[1];
+                        
+                        return (
+                          <div className="flex flex-col gap-3 mt-1 border-t border-slate-50 pt-2">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">
+                                Minimum Limit <span>{minVal.toFixed(isSlide ? 2 : 0)}{isSlide ? ' m' : '°'}</span>
+                              </label>
+                              <input 
+                                type="range" 
+                                min={isSlide ? -5.0 : -180}
+                                max={isSlide ? 5.0 : 180}
+                                step={isSlide ? 0.05 : 1}
+                                value={minVal}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  const newMin = Math.min(val, maxVal);
+                                  updateNodeJoint(selectedNode.id, { range: [newMin, maxVal] });
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">
+                                Maximum Limit <span>{maxVal.toFixed(isSlide ? 2 : 0)}{isSlide ? ' m' : '°'}</span>
+                              </label>
+                              <input 
+                                type="range" 
+                                min={isSlide ? -5.0 : -180}
+                                max={isSlide ? 5.0 : 180}
+                                step={isSlide ? 0.05 : 1}
+                                value={maxVal}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  const newMax = Math.max(val, minVal);
+                                  updateNodeJoint(selectedNode.id, { range: [minVal, newMax] });
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
                   {joint.actuator && (
                     <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
                       <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">⚡ Target Velocity</h3>
@@ -1046,7 +1675,72 @@ function App() {
                         </div>
                       )}
 
-                      {geom.type === 'box' && (
+                      {geom.type === 'box' && selectedNode.isWedge && (
+                        <div className="flex flex-col gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-xs font-medium text-slate-500 flex justify-between">Base Width (X) <span>{(selectedNode.width || 2.0).toFixed(2)} m</span></label>
+                            <input 
+                              type="range" 
+                              min="0.5" 
+                              max="5.0" 
+                              step="0.05" 
+                              value={selectedNode.width || 2.0} 
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                updateWedgeParams(selectedNode.id, { width: val });
+                              }}
+                              className="w-full accent-blue-500 cursor-pointer" 
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-xs font-medium text-slate-500 flex justify-between">Depth (Y) <span>{(selectedNode.depth || 1.0).toFixed(2)} m</span></label>
+                            <input 
+                              type="range" 
+                              min="0.2" 
+                              max="4.0" 
+                              step="0.05" 
+                              value={selectedNode.depth || 1.0} 
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                updateWedgeParams(selectedNode.id, { depth: val });
+                              }}
+                              className="w-full accent-blue-500 cursor-pointer" 
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-xs font-medium text-slate-500 flex justify-between">Height (Z) <span>{(selectedNode.height || 0.5).toFixed(2)} m</span></label>
+                            <input 
+                              type="range" 
+                              min="0.1" 
+                              max="3.0" 
+                              step="0.05" 
+                              value={selectedNode.height || 0.5} 
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                updateWedgeParams(selectedNode.id, { height: val });
+                              }}
+                              className="w-full accent-blue-500 cursor-pointer" 
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1 border-t border-slate-100 pt-2">
+                            <label className="text-xs font-medium text-slate-600 flex justify-between">Wedge Angle <span>{(selectedNode.wedgeAngle !== undefined ? selectedNode.wedgeAngle : 14.036).toFixed(1)}°</span></label>
+                            <input 
+                              type="range" 
+                              min="2" 
+                              max="85" 
+                              step="1" 
+                              value={selectedNode.wedgeAngle !== undefined ? selectedNode.wedgeAngle : 14.036} 
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                updateWedgeParams(selectedNode.id, { wedgeAngle: val });
+                              }}
+                              className="w-full accent-blue-500 cursor-pointer" 
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {geom.type === 'box' && !selectedNode.isWedge && (
                         <div className="flex flex-col gap-3">
                           <div className="flex flex-col gap-1">
                             <label className="text-xs font-medium text-slate-500 flex justify-between">Width (X) <span>{geom.size[0].toFixed(2)} m</span></label>
@@ -1096,7 +1790,7 @@ function App() {
                         </div>
                       )}
 
-                      {(geom.type === 'capsule' || geom.type === 'cylinder') && (
+                      {(geom.type === 'capsule' || geom.type === 'cylinder') && !selectedNode.isPulleyWheel && (
                         <div className="flex flex-col gap-3">
                           <div className="flex flex-col gap-1">
                             <label className="text-xs font-medium text-slate-500 flex justify-between">Radius <span>{geom.size[0].toFixed(3)} m</span></label>
@@ -1108,26 +1802,30 @@ function App() {
                               value={geom.size[0]} 
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value);
-                                updateNodeGeom(selectedNode.id, { size: [val, geom.size[1]] });
+                                updateNodeGeom(selectedNode.id, { 
+                                  size: geom.size[1] !== undefined ? [val, geom.size[1]] : [val] 
+                                });
                               }}
                               className="w-full accent-blue-500 cursor-pointer" 
                             />
                           </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Length (Half-Height) <span>{geom.size[1].toFixed(2)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.05" 
-                              max="3.0" 
-                              step="0.01" 
-                              value={geom.size[1]} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateNodeGeom(selectedNode.id, { size: [geom.size[0], val] });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
+                          {geom.size[1] !== undefined && (
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Length (Half-Height) <span>{geom.size[1].toFixed(2)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.05" 
+                                max="3.0" 
+                                step="0.01" 
+                                value={geom.size[1]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { size: [geom.size[0], val] });
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1166,8 +1864,101 @@ function App() {
                         }}
                         className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
                       />
-                      Enable Collision (Solid)
                     </label>
+                  </div>
+
+                  {/* Material Properties Card */}
+                  <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                    <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
+                      <span className="flex items-center gap-1">🧪 Physical Material</span>
+                      <button 
+                        onClick={() => {
+                          setDocsTab('friction');
+                          setIsDocsOpen(true);
+                        }} 
+                        className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
+                        title="Click for documentation"
+                      >
+                        <Info className="w-3.5 h-3.5" />
+                      </button>
+                    </h3>
+
+                    {/* Bounciness (Restitution) Slider */}
+                    {(() => {
+                      const currentBounce = (() => {
+                        if (!geom.solref) return 0.0;
+                        if (geom.solref[0] >= 0) return 0.0;
+                        const damping = -geom.solref[1];
+                        if (damping >= 50) return 0.0;
+                        const b = Math.exp(-damping / 20);
+                        return Math.min(0.95, Math.max(0.0, b));
+                      })();
+                      return (
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                            Bounciness (Bounce)
+                            <span className="text-blue-600 font-bold">{currentBounce.toFixed(2)}</span>
+                          </label>
+                          <input 
+                            type="range" 
+                            min="0.0" 
+                            max="0.95" 
+                            step="0.05" 
+                            className="w-full accent-blue-500 cursor-pointer" 
+                            value={currentBounce} 
+                            onChange={(e) => {
+                              const bounce = parseFloat(e.target.value);
+                              if (bounce > 0) {
+                                const damping = -20 * Math.log(bounce);
+                                updateNodeGeom(selectedNode.id, {
+                                  solref: [-1000, -damping],
+                                  solimp: [0.95, 0.99, 0.001, 0.5, 2]
+                                });
+                              } else {
+                                // Omit or reset solref/solimp
+                                const updatedGeom = { ...geom };
+                                delete updatedGeom.solref;
+                                delete updatedGeom.solimp;
+                                updateNodeGeom(selectedNode.id, updatedGeom);
+                              }
+                            }}
+                          />
+                          <span className="text-[10px] text-slate-400 leading-tight">
+                            Controls elastic bounce restitution (elastic limit is 0.95).
+                          </span>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Friction Slider */}
+                    {(() => {
+                      const currentFriction = geom.friction ? geom.friction[0] : 0.7;
+                      return (
+                        <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
+                          <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                            Sliding Friction
+                            <span className="text-blue-600 font-bold">{currentFriction.toFixed(2)}</span>
+                          </label>
+                          <input 
+                            type="range" 
+                            min="0.0" 
+                            max="1.5" 
+                            step="0.05" 
+                            className="w-full accent-blue-500 cursor-pointer" 
+                            value={currentFriction} 
+                            onChange={(e) => {
+                              const f = parseFloat(e.target.value);
+                              updateNodeGeom(selectedNode.id, {
+                                friction: [f, 0.005, 0.0001]
+                              });
+                            }}
+                          />
+                          <span className="text-[10px] text-slate-400 leading-tight">
+                            Low friction makes it slippery like ice. High friction creates rubbery resistance.
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Joint Mechanical Coupling Configuration */}
@@ -1341,38 +2132,6 @@ function App() {
                       })()}
                     </div>
                   )}
-
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
-                    <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
-                      <span className="flex items-center gap-1">Friction</span>
-                      <button 
-                        onClick={() => {
-                          setDocsTab('friction');
-                          setIsDocsOpen(true);
-                        }} 
-                        className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
-                        title="Click for documentation"
-                      >
-                        <Info className="w-3.5 h-3.5" />
-                      </button>
-                    </h3>
-                    <label className="text-xs font-medium text-slate-500 flex justify-between">Slide Friction <span>{(geom.friction !== undefined ? geom.friction[0] : 1.0).toFixed(2)}</span></label>
-                    <input 
-                      type="range" 
-                      min="0.0" 
-                      max="2.0" 
-                      step="0.01" 
-                      value={geom.friction !== undefined ? geom.friction[0] : 1.0} 
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        updateNodeGeom(selectedNode.id, {
-                          friction: [val, 0.005, 0.0001]
-                        });
-                      }} 
-                      className="w-full accent-blue-500 cursor-pointer" 
-                    />
-                  </div>
-
                   <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
                     <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">Appearance</h3>
                     <div className="flex items-center justify-between">
@@ -1391,6 +2150,89 @@ function App() {
                   </div>
                 </div>
               ))}
+
+              {selectedNode.isPulleyWheel && (
+                <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
+                  <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">🛞 Pulley Properties</h3>
+                  <label className="text-xs font-medium text-slate-500 flex justify-between">
+                    Pulley Radius <span>{(selectedNode.pulleyRadius || 0.4).toFixed(2)} m</span>
+                  </label>
+                  <input 
+                    type="range" 
+                    min="0.15" 
+                    max="1.5" 
+                    step="0.01" 
+                    value={selectedNode.pulleyRadius || 0.4} 
+                    onChange={(e) => {
+                      const radVal = parseFloat(e.target.value);
+                      updatePulleyParams(selectedNode.id, { pulleyRadius: radVal });
+                    }} 
+                    className="w-full accent-blue-500 cursor-pointer" 
+                  />
+                </div>
+              )}
+
+              {selectedNode.isPulleyRope && (
+                <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                  <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
+                    <span>🧵 Rope Properties</span>
+                  </h3>
+
+                  <p className="text-[10px] text-slate-400 leading-snug -mt-1">
+                    Connect two bodies directly, or optionally route through a Pulley Wheel for an Atwood-style coupling.
+                  </p>
+                  
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                      Body A <span className="font-normal text-rose-400">required</span>
+                    </label>
+                    <select
+                      value={selectedNode.leftTargetId || ''}
+                      onChange={(e) => updateRopeParams(selectedNode.id, { leftTargetId: e.target.value })}
+                      className="w-full text-xs border border-slate-200 rounded p-1.5 bg-slate-50 font-medium text-slate-700 focus:border-blue-500 outline-none"
+                    >
+                      <option value="">-- Select Body A --</option>
+                      {allJointedNodes.map(n => (
+                        <option key={n.id} value={n.id}>{n.id}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                      Body B <span className="font-normal text-rose-400">required</span>
+                    </label>
+                    <select
+                      value={selectedNode.rightTargetId || ''}
+                      onChange={(e) => updateRopeParams(selectedNode.id, { rightTargetId: e.target.value })}
+                      className="w-full text-xs border border-slate-200 rounded p-1.5 bg-slate-50 font-medium text-slate-700 focus:border-blue-500 outline-none"
+                    >
+                      <option value="">-- Select Body B --</option>
+                      {allJointedNodes.map(n => (
+                        <option key={n.id} value={n.id}>{n.id}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                      Pulley Wheel <span className="font-normal text-slate-400">optional</span>
+                    </label>
+                    <select
+                      value={selectedNode.pulleyWheelId || ''}
+                      onChange={(e) => updateRopeParams(selectedNode.id, { pulleyWheelId: e.target.value })}
+                      className="w-full text-xs border border-slate-200 rounded p-1.5 bg-slate-50 font-medium text-slate-700 focus:border-blue-500 outline-none"
+                    >
+                      <option value="">-- None (direct coupling) --</option>
+                      {allPulleyWheels.map(wheel => (
+                        <option key={wheel.id} value={wheel.id}>
+                          {wheel.id} (r={( wheel.pulleyRadius || 0.4).toFixed(2)}m)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
 
               {/* Delete Component Button */}
               <button 

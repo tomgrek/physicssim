@@ -57,6 +57,11 @@ export interface PhysicsState {
   sceneGraph: SceneGraph;
   selectedNodeId: string | null;
   recompileId: number;
+  parentUnderSelected: boolean;
+  
+  draggedNodeId: string | null;
+  dragTarget: { x: number; y: number; z: number } | null;
+  dragDistance: number;
   
   // Actions
   setEngine: (mujoco: any, model: any, data: any) => void;
@@ -81,9 +86,17 @@ export interface PhysicsState {
   deletePusherPeg: (gearId: string) => void;
   updatePusherPeg: (gearId: string, updates: { offset?: number, size?: [number, number] }) => void;
   
-  addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear', position: number[]) => void;
+  setDraggedNodeId: (id: string | null) => void;
+  setDragTarget: (target: { x: number; y: number; z: number } | null) => void;
+  setDragDistance: (distance: number) => void;
+  updateWedgeParams: (id: string, params: { width?: number; depth?: number; height?: number; wedgeAngle?: number }) => void;
+  updatePulleyParams: (id: string, params: { leftTargetId?: string; rightTargetId?: string; pulleyRadius?: number }) => void;
+  updateRopeParams: (id: string, params: { pulleyWheelId?: string; leftTargetId?: string; rightTargetId?: string }) => void;
+  
+  setParentUnderSelected: (val: boolean) => void;
+  addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope', position: number[]) => void;
   recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => void;
-  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion') => void;
+  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole') => void;
   resetSimulation: () => void;
 }
 
@@ -106,7 +119,12 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   
   sceneGraph: initialScene,
   selectedNodeId: null,
+  parentUnderSelected: false,
+  draggedNodeId: null,
+  dragTarget: null,
+  dragDistance: 0,
 
+  setParentUnderSelected: (val) => set({ parentUnderSelected: val }),
   setEngine: (mujoco, model, data) => set({ mujoco, model, data, isLoaded: true }),
   
   togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
@@ -132,6 +150,103 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   },
   
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
+  
+  setDraggedNodeId: (id) => set({ draggedNodeId: id }),
+  setDragTarget: (target) => set({ dragTarget: target }),
+  setDragDistance: (distance) => set({ dragDistance: distance }),
+
+  updateWedgeParams: (id, params) => {
+    const newScene = JSON.parse(JSON.stringify(get().sceneGraph)) as SceneGraph;
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return false;
+      for (const node of nodes) {
+        if (node.id === id) {
+          if (params.width !== undefined) {
+            node.width = params.width;
+            // Recalculate wedgeAngle
+            const h = node.height || 0.5;
+            node.wedgeAngle = Math.atan(h / node.width) * 180 / Math.PI;
+          }
+          if (params.height !== undefined) {
+            node.height = params.height;
+            // Recalculate wedgeAngle
+            const w = node.width || 2.0;
+            node.wedgeAngle = Math.atan(node.height / w) * 180 / Math.PI;
+          }
+          if (params.depth !== undefined) {
+            node.depth = params.depth;
+          }
+          if (params.wedgeAngle !== undefined) {
+            node.wedgeAngle = params.wedgeAngle;
+            // Recalculate height
+            const w = node.width || 2.0;
+            node.height = w * Math.tan(node.wedgeAngle * Math.PI / 180);
+          }
+          
+          // Update first geom size
+          if (node.geoms && node.geoms.length > 0) {
+            const w = node.width || 2.0;
+            const h = node.height || 0.5;
+            const L = Math.sqrt(w * w + h * h);
+            const d = node.depth || 1.0;
+            node.geoms[0].size = [L / 2, d / 2, 0.025];
+          }
+          return true;
+        }
+        if (traverse(node.children)) return true;
+      }
+      return false;
+    };
+    traverse(newScene.nodes);
+    get().recompile(newScene);
+  },
+  
+  updatePulleyParams: (id, params) => {
+    const newScene = JSON.parse(JSON.stringify(get().sceneGraph)) as SceneGraph;
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return false;
+      for (const node of nodes) {
+        if (node.id === id) {
+          if (params.leftTargetId !== undefined) node.leftTargetId = params.leftTargetId;
+          if (params.rightTargetId !== undefined) node.rightTargetId = params.rightTargetId;
+          if (params.pulleyRadius !== undefined) {
+            node.pulleyRadius = params.pulleyRadius;
+            if (node.geoms && node.geoms.length === 3) {
+              node.geoms[0].size[0] = params.pulleyRadius * 0.8;
+              node.geoms[1].size[0] = params.pulleyRadius;
+              node.geoms[2].size[0] = params.pulleyRadius;
+            } else if (node.geoms && node.geoms.length > 0) {
+              node.geoms[0].size[0] = params.pulleyRadius;
+            }
+          }
+          return true;
+        }
+        if (traverse(node.children)) return true;
+      }
+      return false;
+    };
+    traverse(newScene.nodes);
+    get().recompile(newScene);
+  },
+
+  updateRopeParams: (id, params) => {
+    const newScene = JSON.parse(JSON.stringify(get().sceneGraph)) as SceneGraph;
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return false;
+      for (const node of nodes) {
+        if (node.id === id) {
+          if (params.pulleyWheelId !== undefined) node.pulleyWheelId = params.pulleyWheelId;
+          if (params.leftTargetId !== undefined) node.leftTargetId = params.leftTargetId;
+          if (params.rightTargetId !== undefined) node.rightTargetId = params.rightTargetId;
+          return true;
+        }
+        if (traverse(node.children)) return true;
+      }
+      return false;
+    };
+    traverse(newScene.nodes);
+    get().recompile(newScene, get().selectedNodeId);
+  },
   
   updateScene: (newScene) => {
     set({ sceneGraph: newScene });
@@ -170,7 +285,10 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     };
     traverse(newScene.nodes);
     set({ sceneGraph: newScene });
-    get().recompile(newScene, undefined, true);
+    // Do NOT forceReset here: that would snap all other bodies back to their
+    // initial positions. Without forceReset, the recompile copies old qpos/qvel
+    // so every other body stays exactly where it is.
+    get().recompile(newScene, undefined, false);
   },
 
   updateNodeRotation: (id, axis, deg) => {
@@ -288,9 +406,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
               pos: [radius * 0.8, 0, 0.09], // relative offset
               rgba: [0.9, 0.2, 0.2, 1], // red color
               mass: 0.05,
-              condim: 3,
-              solref: [0.015, 1.0],
-              solimp: [0.95, 0.99, 0.001, 0.5, 2]
+              condim: 3
             });
           }
           return true;
@@ -403,15 +519,18 @@ export const useStore = create<PhysicsState>()((set, get) => ({
 
   addComponent: (type, position) => {
     console.log("addComponent START", type, position);
-    const { sceneGraph, selectedNodeId } = get();
+    const { sceneGraph, selectedNodeId, parentUnderSelected } = get();
     const newScene = JSON.parse(JSON.stringify(sceneGraph)) as SceneGraph;
     
-    const id = `${type}_${Date.now()}`;
+    // 8-character random unique suffix (no millisecond timestamp)
+    const id = `${type}_${Math.random().toString(36).substring(2, 10)}`;
     
     // Determine target local position
     let localPos: [number, number, number] = [position[0], position[1], position[2]];
     
-    if (selectedNodeId) {
+    const isChild = !!(selectedNodeId && parentUnderSelected);
+    
+    if (isChild && selectedNodeId) {
       // Find parent world position to make drop coordinates relative to parent!
       const parentWorldPos = getNodeWorldPos(newScene.nodes, selectedNodeId);
       if (parentWorldPos) {
@@ -428,37 +547,43 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     let rgba = [0.5, 0.5, 0.5, 1];
     let mass = 1;
     let joints: any[] = [];
+    let geoms: any[] = [];
     
-    const isChild = !!selectedNodeId;
+    const isChildJoint = isChild;
     
     if (type === 'gear') {
       const radius = 0.5;
       const teeth = 12;
       const color = [0.5, 0.5, 0.5, 1];
-      const geoms = generateGearGeoms(id, radius, teeth, color, false);
+      geoms = generateGearGeoms(id, radius, teeth, color, false);
       joints = [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 0, 1], damping: 0.5 }];
+    } else if (type === 'pulley_wheel') {
+      const r = 0.4;
+      const thickness = 0.08;
+      const spindle_r = r * 0.8;
+      const spindle_h = thickness / 2 - 0.01;
+      const flange_h = 0.01;
       
-      const newNode: SceneNode = {
-        id, name: id, type: 'body', pos: localPos,
-        joints, geoms, children: []
-      };
-      
-      if (selectedNodeId) {
-        addChildNode(newScene.nodes, selectedNodeId, newNode);
-      } else {
-        newScene.nodes.push(newNode);
-      }
+      geoms = [
+        { name: `${id}_spindle`, type: 'cylinder', size: [spindle_r, spindle_h], pos: [0, 0, 0], euler: [90, 0, 0], rgba: [0.3, 0.4, 0.6, 1], mass: 0.5 },
+        { name: `${id}_flange_l`, type: 'cylinder', size: [r, flange_h], pos: [0, -spindle_h - flange_h / 2, 0], euler: [90, 0, 0], rgba: [0.2, 0.3, 0.5, 1], mass: 0.25 },
+        { name: `${id}_flange_r`, type: 'cylinder', size: [r, flange_h], pos: [0, spindle_h + flange_h / 2, 0], euler: [90, 0, 0], rgba: [0.2, 0.3, 0.5, 1], mass: 0.25 }
+      ];
+      joints = [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.2 }];
+    } else if (type === 'pulley_rope') {
+      geoms = [];
+      joints = [];
     } else {
       if (type === 'box') {
         geomType = 'box';
         size = [0.2, 0.2, 0.2];
         rgba = [0.8, 0.2, 0.2, 1];
-        joints = isChild ? [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.5 }] : [{ name: `${id}_free`, type: 'free' }];
+        joints = isChildJoint ? [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.5 }] : [{ name: `${id}_free`, type: 'free' }];
       } else if (type === 'sphere') {
         geomType = 'sphere';
         size = [0.2];
         rgba = [0.2, 0.8, 0.2, 1];
-        joints = isChild ? [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.5 }] : [{ name: `${id}_free`, type: 'free' }];
+        joints = isChildJoint ? [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.5 }] : [{ name: `${id}_free`, type: 'free' }];
       } else if (type === 'capsule') {
         geomType = 'capsule';
         size = [0.04, 0.4];
@@ -468,27 +593,50 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         geomType = 'cylinder';
         size = [0.2, 0.1];
         rgba = [0.9, 0.6, 0.1, 1];
-        joints = isChild ? [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.5 }] : [{ name: `${id}_free`, type: 'free' }];
+        joints = isChildJoint ? [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.5 }] : [{ name: `${id}_free`, type: 'free' }];
       } else if (type === 'bob') {
         geomType = 'sphere';
         size = [0.15];
         rgba = [0.2, 0.6, 1.0, 1];
         mass = 10.0;
         joints = [{ name: `${id}_hinge`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.1 }];
+      } else if (type === 'wedge') {
+        geomType = 'box';
+        size = [1.0, 0.5, 0.25];
+        rgba = [0.8, 0.5, 0.2, 1];
+        joints = []; // static by default
       }
-      
-      const newNode: SceneNode = {
-        id, name: id, type: 'body', pos: localPos,
-        joints,
-        geoms: [{ name: `${id}_geom`, type: geomType, size, mass, rgba }],
-        children: []
-      };
-      
-      if (selectedNodeId) {
-        addChildNode(newScene.nodes, selectedNodeId, newNode);
-      } else {
-        newScene.nodes.push(newNode);
-      }
+      geoms = [{ name: `${id}_geom`, type: geomType, size, mass, rgba }];
+    }
+
+    const newNode: SceneNode = {
+      id, name: id, type: 'body', pos: localPos,
+      joints,
+      geoms,
+      children: [],
+      ...(type === 'wedge' ? {
+        isWedge: true,
+        width: 2.0,
+        depth: 1.0,
+        height: 0.5,
+        wedgeAngle: 14.036
+      } : {}),
+      ...(type === 'pulley_wheel' ? {
+        isPulleyWheel: true,
+        pulleyRadius: 0.4
+      } : {}),
+      ...(type === 'pulley_rope' ? {
+        isPulleyRope: true,
+        pulleyWheelId: '',
+        leftTargetId: '',
+        rightTargetId: ''
+      } : {})
+    };
+
+    if (isChild && selectedNodeId) {
+      addChildNode(newScene.nodes, selectedNodeId, newNode);
+    } else {
+      newScene.nodes.push(newNode);
     }
     
     console.log("addComponent DONE, calling recompile");
@@ -498,6 +646,9 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   
   recompile: async (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => {
     console.log("recompile START");
+    if (typeof window !== 'undefined') {
+      (window as any).DISABLE_USEFRAME = false;
+    }
     const { gravityZ, floorFriction, model: oldModel, data: oldData } = get();
     const sceneGraph = overrideScene ?? get().sceneGraph;
     
@@ -542,6 +693,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         // Initialize control values from actuators
         const actuators: any[] = [];
         const traverse = (nodes: any[]) => {
+          if (!nodes) return;
           for (const node of nodes) {
             node.joints?.forEach((j: any) => { if (j.actuator) actuators.push(j); });
             traverse(node.children);

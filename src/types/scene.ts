@@ -48,6 +48,17 @@ export interface SceneNode {
   allowCoupling?: boolean;
   coupleTargetId?: string;
   coupleRatio?: number;
+  isWedge?: boolean;
+  width?: number;
+  depth?: number;
+  height?: number;
+  wedgeAngle?: number;
+  isPulleyWheel?: boolean;
+  leftTargetId?: string;
+  rightTargetId?: string;
+  pulleyRadius?: number;
+  isPulleyRope?: boolean;
+  pulleyWheelId?: string;
 }
 
 export interface SceneGraph {
