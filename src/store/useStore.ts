@@ -97,7 +97,7 @@ export interface PhysicsState {
   setParentUnderSelected: (val: boolean) => void;
   addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope', position: number[]) => void;
   recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => void;
-  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole') => void;
+  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole' | 'newtons_cradle' | 'suspension_bridge' | 'paper_plane') => void;
   resetSimulation: () => void;
 }
 
@@ -748,6 +748,32 @@ export const useStore = create<PhysicsState>()((set, get) => ({
 
         freshMujoco.mj_forward(newModel, newData);
         console.log("Initial geom_xpos:", Array.from(newData.geom_xpos).join(', '));
+        
+        // If this is the paper plane preset, inject a forward launch velocity
+        // so it glides as soon as the simulation is played.
+        const hasPaperPlane = sceneGraph.nodes.some((n: any) => n.id === 'paper_plane');
+        if (hasPaperPlane) {
+          const planeBodyId = freshMujoco.mj_name2id(newModel, freshMujoco.mjtObj.mjOBJ_BODY.value, 'paper_plane');
+          if (planeBodyId !== -1) {
+            const jntId = freshMujoco.mj_name2id(newModel, freshMujoco.mjtObj.mjOBJ_JOINT.value, 'plane_free');
+            if (jntId !== -1) {
+              const dofAdr = newModel.jnt_dofadr[jntId];
+              // Free joint qvel layout: [linVel_x, linVel_y, linVel_z, angVel_x, angVel_y, angVel_z]
+              // Launch at ~4 m/s in the world X direction (forward), slight upward component
+              newData.qvel[dofAdr + 0] = 4.0;   // X linear velocity (forward throw)
+              newData.qvel[dofAdr + 1] = 0.0;   // Y linear velocity
+              newData.qvel[dofAdr + 2] = 0.5;   // Z linear velocity (slight upward toss)
+              
+              // No initial spin
+              newData.qvel[dofAdr + 3] = 0.0;
+              newData.qvel[dofAdr + 4] = 0.0;
+              newData.qvel[dofAdr + 5] = 0.0;
+              
+              freshMujoco.mj_forward(newModel, newData);
+              console.log("Paper plane launch velocity injected");
+            }
+          }
+        }
       }
       
       // ONE atomic set — sceneGraph, model, data, mujoco, recompileId and selectedNodeId all update together

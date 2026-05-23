@@ -117,10 +117,39 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             if (!model || !mujoco || !data || !Array.isArray(forceVec)) return;
             const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
             if (bId !== -1) {
+              // xfrc_applied layout: [force_x, force_y, force_z, torque_x, torque_y, torque_z]
               data.xfrc_applied[bId * 6 + 0] += forceVec[0] || 0;
               data.xfrc_applied[bId * 6 + 1] += forceVec[1] || 0;
               data.xfrc_applied[bId * 6 + 2] += forceVec[2] || 0;
             }
+          },
+
+          // Applies a world-frame torque vector [TX, TY, TZ] to any body
+          applyTorque: (torqueVec: number[], bodyName = node.id) => {
+            if (!model || !mujoco || !data || !Array.isArray(torqueVec)) return;
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            if (bId !== -1) {
+              // xfrc_applied layout: [force_x, force_y, force_z, torque_x, torque_y, torque_z]
+              data.xfrc_applied[bId * 6 + 3] += torqueVec[0] || 0;
+              data.xfrc_applied[bId * 6 + 4] += torqueVec[1] || 0;
+              data.xfrc_applied[bId * 6 + 5] += torqueVec[2] || 0;
+            }
+          },
+
+          // Returns the body's 3x3 rotation matrix as a flat 9-element row-major array
+          // Use this to transform vectors between world and body frames
+          getOrientation: (bodyName = node.id) => {
+            if (!model || !mujoco || !data) return [1,0,0, 0,1,0, 0,0,1];
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            if (bId !== -1) {
+              const o = bId * 9;
+              return [
+                data.xmat[o+0], data.xmat[o+1], data.xmat[o+2],
+                data.xmat[o+3], data.xmat[o+4], data.xmat[o+5],
+                data.xmat[o+6], data.xmat[o+7], data.xmat[o+8]
+              ];
+            }
+            return [1,0,0, 0,1,0, 0,0,1];
           },
 
           // Applies an internal joint-aligned force (torque for hinges, linear thrust for sliders)
@@ -145,6 +174,12 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Queries elapsed simulation time
           getTime: () => {
             return data ? data.time : 0;
+          },
+
+          // Returns current wind velocity [windX, windY] from environment settings
+          getWind: () => {
+            const state = useStore.getState();
+            return [state.windX || 0, state.windY || 0];
           },
 
           // Safe debugger logging
@@ -1229,6 +1264,7 @@ function App() {
               <option value="cartpole">Cartpole</option>
               <option value="newtons_cradle">Newton's Cradle</option>
               <option value="suspension_bridge">Suspension Bridge</option>
+              <option value="paper_plane">✈ Paper Plane</option>
             </select>
           </div>
 
