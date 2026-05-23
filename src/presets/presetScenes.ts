@@ -614,7 +614,7 @@ export const newtonsCradlePreset: SceneGraph = {
         pos: [x, 0, 2.5],
         euler: isFirst ? [0, 35, 0] : [0, 0, 0],
         joints: [
-          { name: `cradle_joint_${idx}`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.02, limited: true, range: [-90, 90] }
+          { name: `cradle_joint_${idx}`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.05, limited: true, range: [-90, 90] }
         ],
         geoms: [
           { name: `cradle_rod_${idx}`, type: 'capsule', fromto: [0, 0, 0, 0, 0, -1.0], size: [0.01], mass: 0.1, rgba: [0.7, 0.7, 0.7, 1], contype: 0, conaffinity: 0 }
@@ -627,7 +627,7 @@ export const newtonsCradlePreset: SceneGraph = {
             pos: [0, 0, -1.0],
             joints: [],
             geoms: [
-              { name: `cradle_ball_${idx}`, type: 'sphere', size: [0.0995], pos: [0, 0, 0], mass: 6, rgba: [0.8, 0.8, 0.8, 1], solref: [-20000, -15.0], solimp: [0.99, 0.99, 0.001, 0.5, 2] }
+              { name: `cradle_ball_${idx}`, type: 'sphere', size: [0.0995], pos: [0, 0, 0], mass: 6, rgba: [0.8, 0.8, 0.8, 1], solref: [-5000, -50.0], solimp: [0.98, 0.99, 0.001, 0.5, 2] }
             ],
             children: []
           }

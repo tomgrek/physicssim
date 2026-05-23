@@ -190,7 +190,31 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
 
         const { draggedNodeId, dragTarget } = useStore.getState();
         if (draggedNodeId && dragTarget) {
-          const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, draggedNodeId);
+          // Resolve the body to apply force to: prefer the heaviest child body
+          // (e.g. cradle bob) rather than the low-mass pivot rope.
+          let targetBodyName = draggedNodeId;
+          let bestMass = -1;
+          const findHeaviestDescendant = (nodeId: string) => {
+            const bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, nodeId);
+            if (bid !== -1) {
+              const m = model.body_mass[bid] || 0;
+              if (m > bestMass) { bestMass = m; targetBodyName = nodeId; }
+            }
+            // Walk children via scene graph
+            const findNode = (nodes: any[], id: string): any => {
+              for (const n of nodes) {
+                if (n.id === id) return n;
+                const c = findNode(n.children || [], id);
+                if (c) return c;
+              }
+              return null;
+            };
+            const node = findNode(sceneGraph.nodes, nodeId);
+            for (const child of node?.children || []) findHeaviestDescendant(child.id);
+          };
+          findHeaviestDescendant(draggedNodeId);
+
+          const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, targetBodyName);
           if (bId !== -1) {
             const bx = data.xpos[bId * 3];
             const by = data.xpos[bId * 3 + 1];
@@ -202,30 +226,29 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             const vz = data.cvel[bId * 6 + 5];
             
             const mass = model.body_mass[bId] || 1.0;
-            const K = 250.0;
+            const K = 200.0;
             // Critically damped spring coefficient: D = 2 * sqrt(mass * K)
             const D = 2.0 * Math.sqrt(mass * K);
             
-            // Calculate raw proportional spring force
-            let fx = K * (dragTarget.x - bx);
-            let fy = K * (dragTarget.y - by);
-            let fz = K * (dragTarget.z - bz);
+            // Calculate spring + damping force components
+            let fx = K * (dragTarget.x - bx) - D * vx;
+            let fy = K * (dragTarget.y - by) - D * vy;
+            let fz = K * (dragTarget.z - bz) - D * vz;
             
-            // Cap the maximum dragging force to a realistic multiple of gravity (2.5 * mass * g) 
-            // to make objects feel heavy and prevent rocket-like violent accelerations.
-            const maxForce = 2.5 * mass * 9.81;
-            const forceMag = Math.sqrt(fx * fx + fy * fy + fz * fz);
-            if (forceMag > maxForce) {
-              const scale = maxForce / forceMag;
+            // Cap the net PD force to avoid rocket-like energy injection.
+            // Use 3×weight so the user can still pull meaningfully.
+            const maxForce = 3.0 * mass * 9.81;
+            const netMag = Math.sqrt(fx * fx + fy * fy + fz * fz);
+            if (netMag > maxForce) {
+              const scale = maxForce / netMag;
               fx *= scale;
               fy *= scale;
               fz *= scale;
             }
             
-            // Proportional-Derivative (PD) spring force applied to translational FORCE components (indices 0, 1, 2)
-            data.xfrc_applied[bId * 6 + 0] = fx - D * vx;
-            data.xfrc_applied[bId * 6 + 1] = fy - D * vy;
-            data.xfrc_applied[bId * 6 + 2] = fz - D * vz;
+            data.xfrc_applied[bId * 6 + 0] = fx;
+            data.xfrc_applied[bId * 6 + 1] = fy;
+            data.xfrc_applied[bId * 6 + 2] = fz;
           }
         }
         
@@ -1504,7 +1527,7 @@ function App() {
         {selectedNode && (
           <aside 
             style={{ width: `${propertiesWidth}px` }} 
-            className="w-full! h-[50vh]! md:h-auto shrink-0 glass-panel border-t md:border-t-0 md:border-l border-slate-200 flex flex-col p-4 z-20 bg-white/95 md:bg-white/50 overflow-y-auto fixed md:relative left-0 right-0 bottom-0 top-auto md:top-auto shadow-2xl md:shadow-none transition-all duration-200"
+            className="shrink-0 glass-panel border-l border-slate-200 flex flex-col p-4 z-20 bg-white/50 overflow-y-auto"
           >
             {/* Elegant Resize Handle */}
             <div
