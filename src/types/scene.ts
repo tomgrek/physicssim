@@ -25,6 +25,8 @@ export interface SceneJoint {
   axis?: number[];
   pos?: number[];
   damping?: number;
+  stiffness?: number;
+  springref?: number;
   limited?: boolean;
   range?: number[];
   actuator?: {
@@ -48,6 +50,9 @@ export interface SceneNode {
   allowCoupling?: boolean;
   coupleTargetId?: string;
   coupleRatio?: number;
+  weldTargetId?: string;
+  connectTargetId?: string;
+  connectAnchor?: number[];
   isWedge?: boolean;
   width?: number;
   depth?: number;
@@ -59,6 +64,7 @@ export interface SceneNode {
   pulleyRadius?: number;
   isPulleyRope?: boolean;
   pulleyWheelId?: string;
+  script?: string;
 }
 
 export interface SceneGraph {

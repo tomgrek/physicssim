@@ -49,3 +49,50 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 * `src/store/useStore.ts`: State management and scene node mutation actions.
 * `src/utils/mjcf.ts`: Compiles the Zustand scene node graph into high-fidelity MJCF XML code.
 * `src/presets/presetScenes.ts`: Initial scene definitions and configurations.
+
+---
+
+## 🚀 LQR Control Law & Non-Minimum Phase Dynamics (Cartpole)
+
+### 1. 🧬 Hierarchical Dynamic Modeling in MuJoCo
+* **Body Tree Structure**: Reconstructing components as parent-child body relationships (e.g., `pole` parent capsule body + `pole_weight` child sphere body) rather than a single body with multiple geoms enables modular editing in the scene tree but alters the multi-body dynamic tree in MuJoCo. 
+* **Automatic Mass & Inertia Integration**: MuJoCo automatically computes composite body mass, center of mass, and the multi-body inertia matrix at the hinge level of the parent body.
+
+### 2. 🧭 Coordinate Alignment & Sign Consistency
+* **Right-Handed System**: In MuJoCo, $+X$ is right, $+Y$ is forward (into screen), and $+Z$ is up.
+* **Hinge Rotation**: For a hinge rotating about the Y-axis `[0, 1, 0]`, a positive rotation $\theta > 0$ tilts the pole to the **RIGHT (+X)**.
+* **Corrective Sign**: To catch a pole tilting right ($\theta > 0$), the cart must accelerate to the right ($F > 0$). Thus, angle gains $k_\theta$ and $k_\omega$ must be **positive**.
+
+### 3. 🎯 Non-Minimum Phase Centering Feedback
+* **The Centering Paradox**: In non-minimum phase systems, trying to force the cart to the center ($x > 0 \implies F < 0$) fights the catching force. To return left to the center, the cart must first accelerate *further to the right* to tilt the pole to the left, and then ride that tilt back.
+* **Optimal Gains**: Through high-frequency grid simulation searching, we discovered that positive position gains ($k_x > 0, k_v > 0$) combined with dominant vertical tracking gains ($k_\theta > 0, k_\omega > 0$) create highly stable, centering asymptotic decay:
+  * **$k_x = 22.0$** (optimized centering stiffness)
+  * **$k_v = 15.0$** (smooth cart velocity damping)
+  * **$k_\theta = 80.0$** (dominant vertical catch)
+  * **$k_\omega = 20.0$** (angular swing rate damping)
+
+---
+
+## 💻 Practical WSL Development & Simulation Workflow
+
+### 1. 🖧 Windows/WSL Path Mappings
+* **Path Resolution**: The workspace files are accessed in Windows via UNC paths (`\\wsl$\Ubuntu-20.04\home\boab\physics`). However, Windows-based `npm`/`npx` tools will fail with UNC path errors. All dev servers and scripts must be run directly inside the native WSL Linux file system (`/home/boab/physics`).
+* **Environment Execution**: To ensure Node and local tools resolve paths cleanly, run terminal operations via an interactive login shell inside WSL:
+  ```bash
+  wsl bash -i -l -c "npm run dev"
+  ```
+
+### 2. 🚀 Executing TypeScript & ESM in WSL Node
+* **ESM Compatibility**: Standard Node v20.20.0 in WSL cannot natively strip or load `.ts` module imports inside `.mjs` scripts (returning `ERR_UNKNOWN_FILE_EXTENSION`).
+* **Execution Standard**: Use `npx tsx` inside the WSL interactive environment to run diagnostic scratch scripts seamlessly:
+  ```bash
+  wsl bash -i -l -c "npx tsx scratch/test_your_script.mjs"
+  ```
+
+### 3. 🔍 Grid Search & Decay Evaluation Workflow
+* **Early Evaluation Failures**: In MuJoCo simulation grid searches, immediately terminate steps when the state escapes reasonable bounds ($|x| > 1.9$m or $|\theta| > 0.6$ rad) to speed up searches from milliseconds to microseconds per candidate.
+* **Interval-Based Decay Analysis**: To distinguish between unstable limit-cycle oscillations and perfect asymptotic centering decay, split simulations into 10-second intervals (e.g. Phase 1: 0-10s, Phase 2: 10-20s, Phase 3: 20-30s). A set of gains is strictly stable/centering if:
+  $$\text{Max}(|x|)_{\text{Phase 3}} < \text{Max}(|x|)_{\text{Phase 2}} < \text{Max}(|x|)_{\text{Phase 1}}$$
+  $$\text{Max}(|\theta|)_{\text{Phase 3}} < \text{Max}(|\theta|)_{\text{Phase 2}} < \text{Max}(|\theta|)_{\text{Phase 1}}$$
+
+

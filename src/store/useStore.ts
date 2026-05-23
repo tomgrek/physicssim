@@ -78,6 +78,7 @@ export interface PhysicsState {
   updateNodeJoint: (id: string, updates: any) => void;
   updateGearTeeth: (id: string, teeth: number) => void;
   updateNodeRotation: (id: string, axis: 0 | 1 | 2, deg: number) => void;
+  updateNodeScript: (id: string, script: string) => void;
   
   renameNode: (id: string, newName: string) => void;
   updateNodeJointsList: (id: string, joints: any[]) => void;
@@ -351,7 +352,24 @@ export const useStore = create<PhysicsState>()((set, get) => ({
             
             node.geoms = generateGearGeoms(id, newRadius, currentTeeth, newColor, isSecondGear, newContype, newConaffinity);
           } else {
-            Object.assign(node.geoms[0], updates);
+            let targetGeom = node.geoms[0];
+            const mainGeom = node.geoms.find((g: any) => g.type === 'sphere' || g.type === 'box' || g.type === 'cylinder');
+            if (mainGeom) {
+              targetGeom = mainGeom;
+            }
+            if (updates.fromto && targetGeom.fromto) {
+              const oldFromto = targetGeom.fromto;
+              const newFromto = updates.fromto;
+              const oldLen = Math.sqrt((oldFromto[3]-oldFromto[0])**2 + (oldFromto[4]-oldFromto[1])**2 + (oldFromto[5]-oldFromto[2])**2) || 1.0;
+              const newLen = Math.sqrt((newFromto[3]-newFromto[0])**2 + (newFromto[4]-newFromto[1])**2 + (newFromto[5]-newFromto[2])**2) || 1.0;
+              const ratio = newLen / oldLen;
+              if (node.children) {
+                node.children.forEach((child: any) => {
+                  child.pos = [child.pos[0] * ratio, child.pos[1] * ratio, child.pos[2] * ratio];
+                });
+              }
+            }
+            Object.assign(targetGeom, updates);
           }
           return true;
         }
@@ -480,6 +498,24 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     traverse(newScene.nodes);
     set({ sceneGraph: newScene });
     get().recompile();
+  },
+
+  updateNodeScript: (id, script) => {
+    const newScene = JSON.parse(JSON.stringify(get().sceneGraph));
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return false;
+      for (const node of nodes) {
+        if (node.id === id) {
+          node.script = script;
+          return true;
+        }
+        if (traverse(node.children)) return true;
+      }
+      return false;
+    };
+    traverse(newScene.nodes);
+    set({ sceneGraph: newScene });
+    // Note: Live updates do not force model recompiles to support hot-editing of control gains!
   },
 
   updateNodeJointsList: (id, joints) => {
@@ -649,10 +685,10 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     if (typeof window !== 'undefined') {
       (window as any).DISABLE_USEFRAME = false;
     }
-    const { gravityZ, floorFriction, model: oldModel, data: oldData } = get();
+    const { gravityZ, windX, windY, density, floorFriction, model: oldModel, data: oldData } = get();
     const sceneGraph = overrideScene ?? get().sceneGraph;
     
-    const xml = compileToMJCF(sceneGraph, gravityZ, floorFriction);
+    const xml = compileToMJCF(sceneGraph, gravityZ, floorFriction, windX, windY, density);
     console.log("XML generated:\n", xml);
     if (typeof window !== 'undefined') {
       (window as any).compiledXML = xml;

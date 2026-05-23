@@ -28,6 +28,8 @@ const buildJoint = (joint: SceneJoint) => {
   if (joint.pos) attrs += ` pos="${joint.pos.join(' ')}"`;
   if (joint.axis) attrs += ` axis="${joint.axis.join(' ')}"`;
   if (joint.damping !== undefined) attrs += ` damping="${joint.damping}"`;
+  if (joint.stiffness !== undefined) attrs += ` stiffness="${joint.stiffness}"`;
+  if (joint.springref !== undefined) attrs += ` springref="${joint.springref}"`;
   if (joint.limited !== undefined) attrs += ` limited="${joint.limited}"`;
   if (joint.range !== undefined) attrs += ` range="${joint.range.join(' ')}"`;
   return `<joint ${attrs} />`;
@@ -54,7 +56,14 @@ const buildNode = (node: SceneNode): string => {
   return `<body ${attrs}>${innerXml}</body>`;
 };
 
-export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floorFriction: number = 1.0) => {
+export const compileToMJCF = (
+  scene: SceneGraph,
+  gravityZ: number = -9.81,
+  floorFriction: number = 1.0,
+  windX: number = 0,
+  windY: number = 0,
+  density: number = 0
+) => {
   const sceneCopy = JSON.parse(JSON.stringify(scene)) as SceneGraph;
   
   const preprocessNodes = (nodes: SceneNode[]) => {
@@ -108,9 +117,13 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
   const jointedNodes: Record<string, string> = {};
   const explicitCouplingNodes: SceneNode[] = [];
   const pulleyRopesList: SceneNode[] = [];
+  const weldConstraintsList: { bodyName: string; targetId: string }[] = [];
+  const connectConstraintsList: { bodyId: string; bodyName: string; targetId: string; anchor: number[] }[] = [];
+  const nodeNamesMap: Record<string, string> = {};
 
   const traverse = (nodes: SceneNode[]) => {
     for (const node of nodes) {
+      nodeNamesMap[node.id] = node.name;
       if (node.joints && node.joints.length > 0) {
         jointedNodes[node.id] = node.joints[0].name;
       }
@@ -119,6 +132,12 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
       }
       if (node.isPulleyRope) {
         pulleyRopesList.push(node);
+      }
+      if (node.weldTargetId) {
+        weldConstraintsList.push({ bodyName: node.name, targetId: node.weldTargetId });
+      }
+      if (node.connectTargetId && node.connectAnchor) {
+        connectConstraintsList.push({ bodyId: node.id, bodyName: node.name, targetId: node.connectTargetId, anchor: node.connectAnchor });
       }
 
       const couplingAllowed = node.allowCoupling !== false;
@@ -148,7 +167,7 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
   const actuatorsXml = actuators.map((j) => {
     const act = j.actuator!;
     let attrs = `name="${j.name}_actuator" joint="${j.name}"`;
-    if (act.kv !== undefined) attrs += ` kv="${act.kv}"`;
+    if (act.kv !== undefined && act.type === 'velocity') attrs += ` kv="${act.kv}"`;
     if (act.gear !== undefined) attrs += ` gear="${act.gear}"`;
     return `    <${act.type} ${attrs} />`;
   }).join('\n');
@@ -251,13 +270,46 @@ export const compileToMJCF = (scene: SceneGraph, gravityZ: number = -9.81, floor
     ropeCouplingIndex++;
   }
 
+  // 4. Closed-Loop Weld Constraints
+  let weldIndex = 1;
+  for (const w of weldConstraintsList) {
+    const targetName = nodeNamesMap[w.targetId] || w.targetId;
+    equalityConstraints += `\n    <weld name="weld_constraint_${weldIndex++}" body1="${w.bodyName}" body2="${targetName}" />`;
+  }
+
+  // 5. Closed-Loop Connect Joint Constraints
+  let connectIndex = 1;
+  for (const c of connectConstraintsList) {
+    const targetName = nodeNamesMap[c.targetId] || c.targetId;
+    const hasJoint = !!jointedNodes[c.targetId];
+    if (hasJoint) {
+      const body2World = nodeWorldData[c.targetId];
+      const body2Pos = body2World ? body2World.pos : [0, 0, 0];
+      const localAnchor = [
+        c.anchor[0] - body2Pos[0],
+        c.anchor[1] - body2Pos[1],
+        c.anchor[2] - body2Pos[2]
+      ];
+      equalityConstraints += `\n    <connect name="connect_constraint_${connectIndex++}" body1="${c.bodyName}" body2="${targetName}" anchor="${localAnchor.map(v => v.toFixed(6)).join(' ')}" />`;
+    } else {
+      const body1World = nodeWorldData[c.bodyId];
+      const body1Pos = body1World ? body1World.pos : [0, 0, 0];
+      const localAnchor = [
+        c.anchor[0] - body1Pos[0],
+        c.anchor[1] - body1Pos[1],
+        c.anchor[2] - body1Pos[2]
+      ];
+      equalityConstraints += `\n    <connect name="connect_constraint_${connectIndex++}" body1="${c.bodyName}" anchor="${localAnchor.map(v => v.toFixed(6)).join(' ')}" />`;
+    }
+  }
+
   if (equalityConstraints) {
     equalityXml = `\n  <equality>${equalityConstraints}\n  </equality>`;
   }
 
   return `
 <mujoco model="dynamic_scene">
-  <option timestep="0.001" gravity="0 0 ${gravityZ}" />
+  <option timestep="0.001" gravity="0 0 ${gravityZ}" wind="${windX} ${windY} 0" density="${density}" />
   <default>
     <geom solref="-1000 -100" solimp="0.95 0.99 0.001 0.5 2" />
   </default>

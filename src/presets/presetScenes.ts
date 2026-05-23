@@ -6,24 +6,26 @@ export const pendulumPreset: SceneGraph = {
       id: 'pole',
       name: 'pole',
       type: 'body',
-      pos: [0, 0, 1.5],
+      pos: [0, 0, 3.0],
       joints: [
         { name: 'hinge', type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0 }
       ],
       geoms: [
-        { name: 'pole_geom', type: 'capsule', fromto: [0, 0, 0, 1, 0, 0], size: [0.05], mass: 1, rgba: [0.6, 0.6, 0.6, 1] }
+        { name: 'pole_geom', type: 'capsule', fromto: [0, 0, 0, 1, 0, 0], size: [0.05], mass: 1, rgba: [0.6, 0.6, 0.6, 1] },
+        { name: 'pole_bob_geom', type: 'sphere', size: [0.12], pos: [1, 0, 0], mass: 7, rgba: [0.3, 0.5, 0.8, 1] }
       ],
       children: [
         {
-          id: 'bob',
-          name: 'bob',
+          id: 'pole2',
+          name: 'pole2',
           type: 'body',
           pos: [1, 0, 0],
           joints: [
-            { name: 'bob_hinge', type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0 }
+            { name: 'hinge2', type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0 }
           ],
           geoms: [
-            { name: 'bob_geom', type: 'sphere', size: [0.15], mass: 14, rgba: [0.2, 0.6, 1.0, 1] }
+            { name: 'pole2_geom', type: 'capsule', fromto: [0, 0, 0, 1, 0, 0], size: [0.05], mass: 1, rgba: [0.5, 0.5, 0.5, 1] },
+            { name: 'bob_geom', type: 'sphere', size: [0.15], pos: [1, 0, 0], mass: 14, rgba: [0.2, 0.6, 1.0, 1] }
           ],
           children: []
         }
@@ -513,6 +515,24 @@ export const cartpolePreset: SceneGraph = {
       joints: [
         { name: 'cart_slide', type: 'slide', axis: [1, 0, 0], damping: 1.0, limited: true, range: [-2.0, 2.0] }
       ],
+      script: `// Cartpole LQR Balancing Controller
+const x = api.getJointPosition('cart_slide');
+const v = api.getJointVelocity('cart_slide');
+const theta = api.getJointPosition('pole_hinge');
+const omega = api.getJointVelocity('pole_hinge');
+
+// State-feedback LQR controller gains
+const kx = 22.0;      // Cart position gain
+const kv = 15.0;      // Cart velocity damping
+const kTheta = 80.0;  // Pole angle gain (robust tracking)
+const kOmega = 20.0;  // Pole angular velocity damping
+
+// Compute the balancing force
+const force = (kx * x) + (kv * v) + (kTheta * theta) + (kOmega * omega);
+
+// Apply force directly to the cart slide joint
+api.applyJointForce('cart_slide', force);
+`,
       geoms: [
         {
           name: 'cart_geom',
@@ -529,6 +549,7 @@ export const cartpolePreset: SceneGraph = {
           name: 'pole',
           type: 'body',
           pos: [0, 0, 0.12], // hinge sits on top of cart
+          euler: [0, 5, 0],  // Initial tilt (5 degrees around Y)
           joints: [
             { name: 'pole_hinge', type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.05 }
           ],
@@ -540,19 +561,152 @@ export const cartpolePreset: SceneGraph = {
               size: [0.018],
               rgba: [0.65, 0.65, 0.65, 1],
               mass: 0.2
-            },
-            {
-              name: 'pole_weight_geom',
-              type: 'sphere',
-              pos: [0, 0, 0.7],
-              size: [0.06], // spherical tip weight
-              rgba: [0.85, 0.25, 0.25, 1], // crimson tip
-              mass: 0.6
             }
           ],
-          children: []
+          children: [
+            {
+              id: 'pole_weight',
+              name: 'pole_weight',
+              type: 'body',
+              pos: [0, 0, 0.7],
+              joints: [],
+              geoms: [
+                {
+                  name: 'pole_weight_geom',
+                  type: 'sphere',
+                  pos: [0, 0, 0],
+                  size: [0.06], // spherical tip weight
+                  rgba: [0.85, 0.25, 0.25, 1], // crimson tip
+                  mass: 0.6,
+                  condim: 3
+                }
+              ],
+              children: []
+            }
+          ]
         }
       ]
+    }
+  ]
+};
+
+export const newtonsCradlePreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'support_bar',
+      name: 'support_bar',
+      type: 'body',
+      pos: [0, 0, 2.5],
+      joints: [],
+      geoms: [
+        { name: 'bar_geom', type: 'cylinder', size: [0.03, 0.6], pos: [0, 0, 0], euler: [0, 90, 0], rgba: [0.3, 0.3, 0.3, 1] }
+      ],
+      children: []
+    },
+    ...Array.from({ length: 5 }).map((_, idx): SceneNode => {
+      const x = -0.4 + idx * 0.2;
+      const isFirst = idx === 0;
+      
+      return {
+        id: `cradle_${idx}`,
+        name: `cradle_${idx}`,
+        type: 'body',
+        pos: [x, 0, 2.5],
+        euler: isFirst ? [0, 35, 0] : [0, 0, 0],
+        joints: [
+          { name: `cradle_joint_${idx}`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.01 }
+        ],
+        geoms: [
+          { name: `cradle_rod_${idx}`, type: 'capsule', fromto: [0, 0, 0, 0, 0, -1.0], size: [0.01], mass: 0.1, rgba: [0.7, 0.7, 0.7, 1] },
+          { name: `cradle_ball_${idx}`, type: 'sphere', size: [0.0995], pos: [0, 0, -1.0], mass: 6, rgba: [0.8, 0.8, 0.8, 1], solref: [-10000, 0], solimp: [0.99, 0.99, 0.001, 0.5, 2] }
+        ],
+        children: []
+      };
+    })
+  ]
+};
+
+const generateBridgePlanks = (): SceneNode[] => {
+  const planksCount = 10;
+  const plankLength = 0.28;
+  
+  const createPlankNode = (index: number): SceneNode => {
+    const isFirst = index === 1;
+    const isLast = index === planksCount;
+    
+    return {
+      id: `plank_${index}`,
+      name: `plank_${index}`,
+      type: 'body',
+      pos: isFirst ? [-1.4, 0, 1.3] : [plankLength, 0, 0],
+      joints: [
+        { name: `plank_joint_${index}`, type: 'hinge', axis: [0, 1, 0], pos: [0, 0, 0], damping: 0.1 }
+      ],
+      geoms: [
+        { 
+          name: `plank_geom_${index}`, 
+          type: 'box', 
+          size: [plankLength / 2, 0.25, 0.02], 
+          pos: [plankLength / 2, 0, 0], 
+          rgba: [0.65, 0.45, 0.25, 1], 
+          mass: 0.5,
+          condim: 3,
+          friction: [0.8, 0.01, 0.001]
+        }
+      ],
+      children: isLast ? [] : [createPlankNode(index + 1)],
+      ...(isLast ? { connectTargetId: 'support_r', connectAnchor: [1.4, 0, 1.3] } : {})
+    };
+  };
+  
+  return [createPlankNode(1)];
+};
+
+export const suspensionBridgePreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'support_l',
+      name: 'support_l',
+      type: 'body',
+      pos: [-1.5, 0, 0.65],
+      joints: [],
+      geoms: [
+        { name: 'support_l_geom', type: 'box', size: [0.1, 0.35, 0.65], rgba: [0.4, 0.45, 0.5, 1] }
+      ],
+      children: []
+    },
+    {
+      id: 'support_r',
+      name: 'support_r',
+      type: 'body',
+      pos: [1.5, 0, 0.65],
+      joints: [],
+      geoms: [
+        { name: 'support_r_geom', type: 'box', size: [0.1, 0.35, 0.65], rgba: [0.4, 0.45, 0.5, 1] }
+      ],
+      children: []
+    },
+    ...generateBridgePlanks(),
+    {
+      id: 'rolling_ball',
+      name: 'rolling_ball',
+      type: 'body',
+      pos: [0, 0, 2.2],
+      joints: [
+        { name: 'rolling_ball_free', type: 'free' }
+      ],
+      geoms: [
+        { 
+          name: 'ball_geom', 
+          type: 'sphere', 
+          size: [0.38], 
+          rgba: [0.85, 0.25, 0.25, 1], 
+          mass: 30.0, 
+          condim: 3, 
+          friction: [0.4, 0.01, 0.001] 
+        }
+      ],
+      children: []
     }
   ]
 };
@@ -589,5 +743,13 @@ export const PRESETS = {
   cartpole: {
     name: 'Cartpole System',
     scene: cartpolePreset
+  },
+  newtons_cradle: {
+    name: "Newton's Cradle",
+    scene: newtonsCradlePreset
+  },
+  suspension_bridge: {
+    name: 'Suspension Bridge',
+    scene: suspensionBridgePreset
   }
 };

@@ -4,7 +4,7 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useStore } from './store/useStore';
 import type { SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc } from 'lucide-react';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
@@ -13,6 +13,158 @@ import { useFrame } from '@react-three/fiber';
 const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any, mujoco: any, isPlaying: boolean }) => {
 
   const accumulator = useRef<number>(0);
+  const scriptCache = useRef<Record<string, Function>>({});
+  const sceneGraph = useStore(state => state.sceneGraph);
+
+  // Auto-clear cache when scene graph is edited (e.g. scripts saved)
+  useEffect(() => {
+    scriptCache.current = {};
+  }, [sceneGraph]);
+
+  const executeScripts = (nodes: any[]) => {
+    if (!nodes) return;
+    for (const node of nodes) {
+      if (node.script && node.script.trim() !== '') {
+        let fn = scriptCache.current[node.id];
+        if (!fn) {
+          try {
+            fn = new Function('api', node.script);
+            scriptCache.current[node.id] = fn;
+          } catch (e: any) {
+            console.error(`[Script Compilation Error on node ${node.name}]:`, e);
+            fn = () => {}; // Cache dummy fallback to avoid infinite frame error logs
+            scriptCache.current[node.id] = fn;
+          }
+        }
+
+        const api = {
+          id: node.id,
+          name: node.name,
+
+          // Reads physical position [X, Y, Z] of any body in the scene
+          getPosition: (bodyName = node.id) => {
+            if (!model || !mujoco || !data) return [0, 0, 0];
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            if (bId !== -1) {
+              return [
+                data.xpos[bId * 3],
+                data.xpos[bId * 3 + 1],
+                data.xpos[bId * 3 + 2]
+              ];
+            }
+            return [0, 0, 0];
+          },
+
+          // Reads linear velocity [VX, VY, VZ] of any body
+          getVelocity: (bodyName = node.id) => {
+            if (!model || !mujoco || !data) return [0, 0, 0];
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            if (bId !== -1) {
+              return [
+                data.cvel[bId * 6 + 3], // linear velocity X
+                data.cvel[bId * 6 + 4], // linear velocity Y
+                data.cvel[bId * 6 + 5]  // linear velocity Z
+              ];
+            }
+            return [0, 0, 0];
+          },
+
+          // Reads angular velocity [WX, WY, WZ] of any body
+          getAngularVelocity: (bodyName = node.id) => {
+            if (!model || !mujoco || !data) return [0, 0, 0];
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            if (bId !== -1) {
+              return [
+                data.cvel[bId * 6 + 0], // angular X
+                data.cvel[bId * 6 + 1], // angular Y
+                data.cvel[bId * 6 + 2]  // angular Z
+              ];
+            }
+            return [0, 0, 0];
+          },
+
+          // Reads total body mass in kg
+          getMass: (bodyName = node.id) => {
+            if (!model || !mujoco || !data) return 0;
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            return bId !== -1 ? model.body_mass[bId] : 0;
+          },
+
+          // Reads 1D joint position (translation in m for sliders, angle in rad for hinges)
+          getJointPosition: (jointName: string) => {
+            if (!model || !mujoco || !data) return 0;
+            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+            if (jId !== -1) {
+              const adr = model.jnt_qposadr[jId];
+              return data.qpos[adr];
+            }
+            return 0;
+          },
+
+          // Reads 1D joint velocity (translation speed for sliders, angular velocity for hinges)
+          getJointVelocity: (jointName: string) => {
+            if (!model || !mujoco || !data) return 0;
+            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+            if (jId !== -1) {
+              const adr = model.jnt_dofadr[jId];
+              return data.qvel[adr];
+            }
+            return 0;
+          },
+
+          // Applies a direct external force vector [FX, FY, FZ] to any body
+          applyForce: (forceVec: number[], bodyName = node.id) => {
+            if (!model || !mujoco || !data || !Array.isArray(forceVec)) return;
+            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            if (bId !== -1) {
+              data.xfrc_applied[bId * 6 + 0] += forceVec[0] || 0;
+              data.xfrc_applied[bId * 6 + 1] += forceVec[1] || 0;
+              data.xfrc_applied[bId * 6 + 2] += forceVec[2] || 0;
+            }
+          },
+
+          // Applies an internal joint-aligned force (torque for hinges, linear thrust for sliders)
+          applyJointForce: (jointName: string, forceVal: number) => {
+            if (!model || !mujoco || !data || typeof forceVal !== 'number') return;
+            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+            if (jId !== -1) {
+              const adr = model.jnt_dofadr[jId];
+              data.qfrc_applied[adr] += forceVal;
+            }
+          },
+
+          // Sets active actuator control input (for motor speed/torque)
+          setActuatorControl: (actuatorName: string, ctrlVal: number) => {
+            if (!model || !mujoco || !data || typeof ctrlVal !== 'number') return;
+            const actId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR.value, actuatorName);
+            if (actId !== -1) {
+              data.ctrl[actId] = ctrlVal;
+            }
+          },
+
+          // Queries elapsed simulation time
+          getTime: () => {
+            return data ? data.time : 0;
+          },
+
+          // Safe debugger logging
+          log: (msg: any) => {
+            console.log(`[Script:${node.name}]`, msg);
+          }
+        };
+
+        try {
+          fn(api);
+        } catch (e: any) {
+          console.error(`[Script Runtime Error on node ${node.name}]:`, e);
+        }
+      }
+
+      if (node.children) {
+        executeScripts(node.children);
+      }
+    }
+  };
   
   useFrame((_state, delta) => {
     // Safety check: ensure closure model/data match current store active ones
@@ -32,8 +184,10 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
     
     for (let i = 0; i < stepsNeeded; i++) {
       try {
-        // Reset and apply mouse drag forces if active
+        // Reset applied external forces and joint forces at step start
         data.xfrc_applied.fill(0);
+        data.qfrc_applied.fill(0);
+
         const { draggedNodeId, dragTarget } = useStore.getState();
         if (draggedNodeId && dragTarget) {
           const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, draggedNodeId);
@@ -49,6 +203,9 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           }
         }
         
+        // Execute active control scripts immediately prior to physics iteration
+        executeScripts(sceneGraph.nodes);
+
         mujoco.mj_step(model, data);
         
         // Safety check for NaN values in positions
@@ -760,7 +917,28 @@ function App() {
   }
   useMuJoCoInit();
   const [isDocsOpen, setIsDocsOpen] = useState(false);
-  const [docsTab, setDocsTab] = useState<'gravity' | 'coupling' | 'collision' | 'friction'>('gravity');
+  const [docsTab, setDocsTab] = useState<'gravity' | 'coupling' | 'collision' | 'friction' | 'scripting'>('gravity');
+  const [scriptText, setScriptText] = useState('');
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [showApiRef, setShowApiRef] = useState(false);
+  const [propertiesWidth, setPropertiesWidth] = useState(380);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const newWidth = window.innerWidth - moveEvent.clientX;
+      if (newWidth >= 280 && newWidth <= 800) {
+        setPropertiesWidth(newWidth);
+      }
+    };
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  }, []);
+
   const { 
     model, data, mujoco, recompileId,
     isPlaying, togglePlay, isLoaded, 
@@ -773,7 +951,7 @@ function App() {
     updateNodeJointsList, deleteNode, renameNode,
     addPusherPeg, deletePusherPeg, updatePusherPeg, updateNodeRotation,
     updateWedgeParams, updatePulleyParams, updateRopeParams,
-    parentUnderSelected, setParentUnderSelected
+    parentUnderSelected, setParentUnderSelected, updateNodeScript
   } = useStore();
 
   // Helper to find a node by ID in hierarchy
@@ -857,6 +1035,31 @@ function App() {
     return found as any;
   }, [selectedNodeId, sceneGraph]);
 
+  // Sync selected node's script into local text state
+  useEffect(() => {
+    if (selectedNode) {
+      setScriptText(selectedNode.script || '');
+      setScriptError(null);
+    } else {
+      setScriptText('');
+      setScriptError(null);
+    }
+  }, [selectedNodeId, selectedNode?.id]);
+
+  const handleSaveScript = useCallback(() => {
+    if (!selectedNode) return;
+    try {
+      if (scriptText.trim() !== '') {
+        // Syntax compilation check
+        new Function('api', scriptText);
+      }
+      setScriptError(null);
+      updateNodeScript(selectedNode.id, scriptText);
+    } catch (e: any) {
+      setScriptError(e.message || 'Compilation Error');
+    }
+  }, [selectedNode, scriptText, updateNodeScript]);
+
   // Utility to handle moving free bodies
   const handleMove = (axis: 0 | 1 | 2, val: number) => {
     if (!selectedNode) return;
@@ -872,15 +1075,18 @@ function App() {
     // recompile (from updateNodePos alone) which was snapping all other bodies
     // back to their initial positions.
     if (model && mujoco && data) {
-      const jointId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, `${selectedNode.id}_free`);
-      if (jointId !== -1) {
-        const adr = model.jnt_qposadr[jointId];
-        data.qpos[adr + axis] = cleanVal;
-        // Zero out velocities to prevent crazy snaps
-        const vadr = model.jnt_dofadr[jointId];
-        for (let i = 0; i < 6; i++) data.qvel[vadr + i] = 0;
-        // Force propagation to update positions in 3D visually
-        mujoco.mj_forward(model, data);
+      const freeJoint = selectedNode.joints?.find((j: any) => j.type === 'free');
+      if (freeJoint) {
+        const jointId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, freeJoint.name);
+        if (jointId !== -1) {
+          const adr = model.jnt_qposadr[jointId];
+          data.qpos[adr + axis] = cleanVal;
+          // Zero out velocities to prevent crazy snaps
+          const vadr = model.jnt_dofadr[jointId];
+          for (let i = 0; i < 6; i++) data.qvel[vadr + i] = 0;
+          // Force propagation to update positions in 3D visually
+          mujoco.mj_forward(model, data);
+        }
       }
     }
   };
@@ -957,6 +1163,8 @@ function App() {
               <option value="inclined_plane">Inclined Plane</option>
               <option value="pulley_system">Pulley System Stand</option>
               <option value="cartpole">Cartpole System</option>
+              <option value="newtons_cradle">Newton's Cradle</option>
+              <option value="suspension_bridge">Suspension Bridge</option>
             </select>
           </div>
 
@@ -1251,15 +1459,32 @@ function App() {
 
         {/* Contextual Properties Sidebar */}
         {selectedNode && (
-          <aside className="w-64 shrink-0 glass-panel border-l border-slate-200 flex flex-col p-4 z-10 bg-white/50 overflow-y-auto">
+          <aside 
+            style={{ width: `${propertiesWidth}px` }} 
+            className="shrink-0 glass-panel border-l border-slate-200 flex flex-col p-4 z-10 bg-white/50 overflow-y-auto relative"
+          >
+            {/* Elegant Resize Handle */}
+            <div
+              onMouseDown={handleMouseDown}
+              className="absolute top-0 left-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/40 transition-colors z-20 group flex items-center justify-center"
+              title="Drag to resize panel"
+            >
+              <div className="w-[2px] h-8 bg-slate-300 group-hover:bg-blue-500 group-active:bg-blue-600 rounded transition-colors" />
+            </div>
+
             <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4 flex items-center justify-between">
               <span className="flex items-center gap-2"><SlidersHorizontal className="w-4 h-4" /> Properties</span>
               <button onClick={() => setSelectedNodeId(null)}><X className="w-4 h-4 text-slate-400 hover:text-slate-600" /></button>
             </h2>
             
             <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1 p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
-                <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Component Name</label>
+              <div className="flex flex-col gap-1.5 p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Component Name</label>
+                  <span className="font-mono text-[9px] text-blue-600 font-semibold bg-blue-50 px-1 py-0.5 rounded cursor-pointer select-all border border-blue-100" title="Body API Reference Name. Click to select/copy.">
+                    api.getPosition('{selectedNode.name || selectedNode.id}')
+                  </span>
+                </div>
                 <input 
                   type="text" 
                   value={selectedNode.name || ''} 
@@ -1267,7 +1492,7 @@ function App() {
                   className="w-full px-2.5 py-1.5 border border-slate-200 rounded text-sm bg-white font-medium text-slate-800 outline-none focus:border-blue-500 shadow-sm"
                   placeholder="Rename component..."
                 />
-                <span className="text-[9px] font-mono text-slate-400 mt-1">ID: {selectedNode.id}</span>
+                <span className="text-[9px] font-mono text-slate-400 mt-0.5">ID: {selectedNode.id}</span>
               </div>
 
               {/* Joint Type Configuration */}
@@ -1312,6 +1537,27 @@ function App() {
                   <option value="slide">Slider (Prismatic Joint)</option>
                   <option value="ball">Ball Joint (Spherical)</option>
                 </select>
+
+                {selectedNode.joints?.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1.5 p-2 bg-slate-50 rounded-lg border border-slate-150">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">Joint Name (for API)</label>
+                      <span className="font-mono text-[9px] text-blue-600 font-semibold bg-blue-50 px-1 py-0.5 rounded cursor-pointer select-all border border-blue-100" title="Joint API Reference. Click to select/copy.">
+                        api.getJointPosition('{selectedNode.joints[0].name}')
+                      </span>
+                    </div>
+                    <input 
+                      type="text" 
+                      value={selectedNode.joints[0].name || ''} 
+                      onChange={(e) => {
+                        const cleanName = e.target.value.replace(/[^a-zA-Z0-9_]/g, '_');
+                        updateNodeJoint(selectedNode.id, { name: cleanName });
+                      }}
+                      className="w-full px-2 py-1 border border-slate-200 rounded text-xs font-mono bg-white text-slate-800 outline-none focus:border-blue-500 shadow-sm"
+                      placeholder="e.g. cart_slide"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Motor Actuator Option for Hinge/Slide joints */}
@@ -1334,6 +1580,50 @@ function App() {
                     />
                     Enable Motor Drive
                   </label>
+
+                  {selectedNode.joints[0].actuator && (
+                    <div className="flex flex-col gap-2.5 mt-1 pt-2 border-t border-slate-100">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Actuator Type</label>
+                        <select
+                          value={selectedNode.joints[0].actuator.type}
+                          onChange={(e) => {
+                            const type = e.target.value as 'velocity' | 'motor';
+                            updateNodeJoint(selectedNode.id, {
+                              ...selectedNode.joints[0],
+                              actuator: { ...selectedNode.joints[0].actuator, type, kv: type === 'velocity' ? 10 : undefined }
+                            });
+                          }}
+                          className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs bg-white font-medium text-slate-700 outline-none cursor-pointer focus:border-blue-500"
+                        >
+                          <option value="velocity">Velocity Drive (Target Speed)</option>
+                          <option value="motor">Torque Drive (Direct Force)</option>
+                        </select>
+                      </div>
+
+                      {selectedNode.joints[0].actuator.type === 'velocity' && (
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs font-medium text-slate-500 flex justify-between">
+                            Velocity Gain (kv) <span>{selectedNode.joints[0].actuator.kv || 10}</span>
+                          </label>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="100"
+                            step="0.5"
+                            value={selectedNode.joints[0].actuator.kv || 10}
+                            onChange={(e) => {
+                              updateNodeJoint(selectedNode.id, {
+                                ...selectedNode.joints[0],
+                                actuator: { ...selectedNode.joints[0].actuator, kv: parseFloat(e.target.value) }
+                              });
+                            }}
+                            className="w-full accent-blue-500 cursor-pointer"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1548,6 +1838,46 @@ function App() {
                     </div>
                   )}
 
+                  {(joint.type === 'hinge' || joint.type === 'slide' || joint.type === 'ball') && (
+                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
+                        <span>🌸 Joint Springs</span>
+                      </h3>
+                      
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-slate-500 flex justify-between">
+                          Spring Stiffness (K) <span>{(joint.stiffness || 0).toFixed(0)} N/m</span>
+                        </label>
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max="1000" 
+                          step="1" 
+                          value={joint.stiffness || 0} 
+                          onChange={(e) => updateNodeJoint(selectedNode.id, { stiffness: parseFloat(e.target.value) })}
+                          className="w-full accent-blue-500 cursor-pointer" 
+                        />
+                      </div>
+
+                      {(joint.stiffness || 0) > 0 && (joint.type === 'hinge' || joint.type === 'slide') && (
+                        <div className="flex flex-col gap-1 mt-1 border-t border-slate-50 pt-2">
+                          <label className="text-xs font-medium text-slate-500 flex justify-between">
+                            Spring Rest Position <span>{(joint.springref || 0).toFixed(joint.type === 'slide' ? 2 : 0)}{joint.type === 'slide' ? ' m' : '°'}</span>
+                          </label>
+                          <input 
+                            type="range" 
+                            min={joint.type === 'slide' ? -5.0 : -180} 
+                            max={joint.type === 'slide' ? 5.0 : 180} 
+                            step={joint.type === 'slide' ? 0.05 : 1} 
+                            value={joint.springref || 0} 
+                            onChange={(e) => updateNodeJoint(selectedNode.id, { springref: parseFloat(e.target.value) })}
+                            className="w-full accent-blue-500 cursor-pointer" 
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {(joint.type === 'hinge' || joint.type === 'slide') && (
                     <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
                       <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
@@ -1622,37 +1952,46 @@ function App() {
                     </div>
                   )}
 
-                  {joint.actuator && (
-                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
-                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">⚡ Target Velocity</h3>
-                      <label className="text-xs font-medium text-slate-500 flex justify-between">
-                        Control Speed
-                        <span>{joint.actuator.ctrlValue || 0}</span>
-                      </label>
-                      <input 
-                        type="range" 
-                        min="-20" 
-                        max="20" 
-                        step="0.5" 
-                        value={joint.actuator.ctrlValue || 0} 
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          if (isPlaying && model && data && mujoco) {
-                            const actId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR.value, `${joint.name}_actuator`);
-                            if (actId !== -1) data.ctrl[actId] = val;
-                          }
-                          updateNodeJoint(selectedNode.id, { actuator: { ...joint.actuator, ctrlValue: val } });
-                        }} 
-                        className="w-full accent-blue-500 cursor-pointer" 
-                      />
-                    </div>
-                  )}
+                  {joint.actuator && (() => {
+                    const isTorque = joint.actuator.type === 'motor';
+                    
+                    return (
+                      <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
+                        <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">
+                          {isTorque ? '💪 Target Torque/Force' : '⚡ Target Velocity'}
+                        </h3>
+                        <label className="text-xs font-medium text-slate-500 flex justify-between">
+                          {isTorque ? 'Control Force' : 'Control Speed'}
+                          <span>{joint.actuator.ctrlValue || 0}</span>
+                        </label>
+                        <input 
+                          type="range" 
+                          min={isTorque ? "-100" : "-20"} 
+                          max={isTorque ? "100" : "20"} 
+                          step={isTorque ? "1" : "0.5"} 
+                          value={joint.actuator.ctrlValue || 0} 
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (isPlaying && model && data && mujoco) {
+                              const actId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR.value, `${joint.name}_actuator`);
+                              if (actId !== -1) data.ctrl[actId] = val;
+                            }
+                            updateNodeJoint(selectedNode.id, { actuator: { ...joint.actuator, ctrlValue: val } });
+                          }} 
+                          className="w-full accent-blue-500 cursor-pointer" 
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
 
               {/* Dimensions Resizing and Color Properties */}
-              {selectedNode.geoms?.slice(0, 1).map((geom: any, i: number) => (
-                <div key={`geom-${i}`} className="flex flex-col gap-4">
+              {(() => {
+                const geom = selectedNode.geoms?.find((g: any) => g.type === 'sphere' || g.type === 'box' || g.type === 'cylinder') || selectedNode.geoms?.[0];
+                if (!geom) return null;
+                return (
+                  <div key="geom-properties" className="flex flex-col gap-4">
                   {!selectedNode.id.includes('gear') && (
                     <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
                       <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2">📏 Resize Component</h3>
@@ -1826,6 +2165,41 @@ function App() {
                               />
                             </div>
                           )}
+                          {geom.fromto !== undefined && (() => {
+                            const dirX = geom.fromto[3] - geom.fromto[0];
+                            const dirY = geom.fromto[4] - geom.fromto[1];
+                            const dirZ = geom.fromto[5] - geom.fromto[2];
+                            const currentLength = Math.sqrt(dirX*dirX + dirY*dirY + dirZ*dirZ) || 1.0;
+                            
+                            return (
+                              <div className="flex flex-col gap-1">
+                                <label className="text-xs font-medium text-slate-500 flex justify-between">
+                                  Length (Segment) <span>{currentLength.toFixed(2)} m</span>
+                                </label>
+                                <input 
+                                  type="range" 
+                                  min="0.1" 
+                                  max="5.0" 
+                                  step="0.05" 
+                                  value={currentLength} 
+                                  onChange={(e) => {
+                                    const newVal = parseFloat(e.target.value);
+                                    const scale = newVal / currentLength;
+                                    const newFromto = [
+                                      geom.fromto[0],
+                                      geom.fromto[1],
+                                      geom.fromto[2],
+                                      geom.fromto[0] + dirX * scale,
+                                      geom.fromto[1] + dirY * scale,
+                                      geom.fromto[2] + dirZ * scale
+                                    ];
+                                    updateNodeGeom(selectedNode.id, { fromto: newFromto });
+                                  }}
+                                  className="w-full accent-blue-500 cursor-pointer" 
+                                />
+                              </div>
+                            );
+                          })()}
                         </div>
                       )}
                     </div>
@@ -2149,7 +2523,8 @@ function App() {
                     </div>
                   </div>
                 </div>
-              ))}
+              );
+            })()}
 
               {selectedNode.isPulleyWheel && (
                 <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
@@ -2234,6 +2609,184 @@ function App() {
                 </div>
               )}
 
+              {/* Component Control Script Card */}
+              <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2.5">
+                <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 font-semibold text-slate-800">
+                    <Code className="w-4 h-4 text-blue-500" />
+                    Component Script
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {selectedNode.script ? (
+                      <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full border border-emerald-100 animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                        Active
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-medium text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded-full border border-slate-100">
+                        Disabled
+                      </span>
+                    )}
+                  </div>
+                </h3>
+
+                <p className="text-[10px] text-slate-400 -mt-1 leading-tight">
+                  Write custom real-time JavaScript to control this component at 1000Hz.
+                </p>
+
+                {/* Templates Selector */}
+                <div className="flex items-center justify-between text-xs text-slate-500 gap-1.5 bg-slate-50 p-1.5 rounded-md border border-slate-100">
+                  <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">Templates:</span>
+                  <select
+                    onChange={(e) => {
+                      const templateVal = e.target.value;
+                      if (templateVal === 'lqr') {
+                        setScriptText(`// Cartpole LQR Balancing Controller
+const x = api.getJointPosition('cart_slide');
+const v = api.getJointVelocity('cart_slide');
+const theta = api.getJointPosition('pole_hinge');
+const omega = api.getJointVelocity('pole_hinge');
+
+// State-feedback LQR controller gains
+const kx = 22.0;      // Cart position gain
+const kv = 15.0;      // Cart velocity damping
+const kTheta = 80.0;  // Pole angle gain (robust tracking)
+const kOmega = 20.0;  // Pole angular velocity damping
+
+// Compute the balancing force
+const force = (kx * x) + (kv * v) + (kTheta * theta) + (kOmega * omega);
+
+// Apply force directly to the cart slide joint
+api.applyJointForce('cart_slide', force);
+`);
+                      } else if (templateVal === 'sine') {
+                        setScriptText(`// Sinusoidal Driver
+const forceX = Math.sin(api.getTime() * 5.0) * 8.0;
+api.applyForce([forceX, 0, 0]);
+`);
+                      } else if (templateVal === 'spring') {
+                        setScriptText(`// PD Harmonic Spring / Return-to-Center
+const pos = api.getPosition();
+const dist = 0.0 - pos[0];
+const vel = api.getVelocity()[0];
+
+// PD coefficients
+const kp = 25.0; // Spring constant
+const kd = 5.0;  // Damping
+
+const force = (kp * dist) - (kd * vel);
+api.applyForce([force, 0, 0]);
+`);
+                      } else if (templateVal === 'clear') {
+                        setScriptText('');
+                      }
+                      e.target.value = ''; // Reset selection
+                    }}
+                    className="text-xs bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 outline-none focus:border-blue-500 cursor-pointer"
+                  >
+                    <option value="">-- Select Template --</option>
+                    <option value="lqr">LQR Cartpole Balancer</option>
+                    <option value="sine">Sinusoidal Driver</option>
+                    <option value="spring">PD Harmonic Spring</option>
+                    <option value="clear">Clear Script</option>
+                  </select>
+                </div>
+
+                {/* Text Area Code Editor */}
+                <div className="relative">
+                  <textarea
+                    value={scriptText}
+                    onChange={(e) => setScriptText(e.target.value)}
+                    placeholder="// Write control logic here... e.g. api.applyForce([10, 0, 0])"
+                    className="w-full h-40 font-mono text-[11px] leading-relaxed p-2.5 bg-slate-950 text-emerald-400 rounded-lg border border-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y shadow-inner"
+                    spellCheck={false}
+                  />
+                  <div className="absolute right-2.5 bottom-2.5 text-[8px] font-mono text-slate-600 bg-slate-900/50 px-1 rounded pointer-events-none select-none border border-slate-800">
+                    JS
+                  </div>
+                </div>
+
+                {/* Compilation Error Display */}
+                {scriptError && (
+                  <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-[10px] flex gap-1.5 items-start leading-tight">
+                    <span className="font-bold shrink-0">⚠️ Error:</span>
+                    <span className="font-mono text-slate-700 break-all">{scriptError}</span>
+                  </div>
+                )}
+
+                {/* Control Actions Row */}
+                <div className="flex gap-2 items-center justify-between">
+                  <button
+                    onClick={() => setShowApiRef(!showApiRef)}
+                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <Info className="w-3.5 h-3.5" />
+                    {showApiRef ? 'Hide API Reference' : 'Show API Reference'}
+                  </button>
+
+                  <button
+                    onClick={handleSaveScript}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-[11px] font-semibold shadow transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    Save & Execute
+                  </button>
+                </div>
+
+                {/* API Reference Collapsible */}
+                {showApiRef && (
+                  <div className="text-[10px] bg-slate-50 border border-slate-150 rounded-lg p-2.5 flex flex-col gap-2 font-sans text-slate-600 max-h-48 overflow-y-auto">
+                    <div className="font-semibold text-slate-700 border-b border-slate-200 pb-1 mb-1">Available API Methods:</div>
+                    <div className="flex flex-col gap-1.5">
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getPosition(bodyName?)</code>
+                        <p className="text-slate-500 mt-0.5">Returns array <code className="font-mono">[x, y, z]</code> of body position.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getVelocity(bodyName?)</code>
+                        <p className="text-slate-500 mt-0.5">Returns array <code className="font-mono">[vx, vy, vz]</code> of body velocity.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getAngularVelocity(bodyName?)</code>
+                        <p className="text-slate-500 mt-0.5">Returns array <code className="font-mono">[wx, wy, wz]</code> of body angular velocity.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getMass(bodyName?)</code>
+                        <p className="text-slate-500 mt-0.5">Returns body mass in kg.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getJointPosition(jointName)</code>
+                        <p className="text-slate-500 mt-0.5">Returns joint position (m for slide, rad for hinge).</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getJointVelocity(jointName)</code>
+                        <p className="text-slate-500 mt-0.5">Returns joint velocity (m/s for slide, rad/s for hinge).</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.applyForce(forceVec, bodyName?)</code>
+                        <p className="text-slate-500 mt-0.5">Applies external force <code className="font-mono">[fx, fy, fz]</code> to a body.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.applyJointForce(jointName, forceVal)</code>
+                        <p className="text-slate-500 mt-0.5">Applies joint-aligned torque or force.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.setActuatorControl(actuatorName, ctrlVal)</code>
+                        <p className="text-slate-500 mt-0.5">Sets input control value on an actuator.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.getTime()</code>
+                        <p className="text-slate-500 mt-0.5">Returns elapsed simulation time in seconds.</p>
+                      </div>
+                      <div>
+                        <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">api.log(msg)</code>
+                        <p className="text-slate-500 mt-0.5">Logs message to browser developer console.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Delete Component Button */}
               <button 
                 onClick={() => deleteNode(selectedNode.id)}
@@ -2290,6 +2843,12 @@ function App() {
                   className={`px-3 py-2 text-left rounded-lg text-xs font-semibold transition-all ${docsTab === 'friction' ? 'bg-blue-500 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}
                 >
                   🛷 Friction Controls
+                </button>
+                <button 
+                  onClick={() => setDocsTab('scripting')}
+                  className={`px-3 py-2 text-left rounded-lg text-xs font-semibold transition-all ${docsTab === 'scripting' ? 'bg-blue-500 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  💻 Control Scripting
                 </button>
               </div>
 
@@ -2360,7 +2919,7 @@ function App() {
                   </div>
                 )}
 
-                {docsTab === 'friction' && (
+                 {docsTab === 'friction' && (
                   <div className="flex flex-col gap-4">
                     <h3 className="font-bold text-slate-800 text-lg flex items-center gap-1.5">🛷 Dynamic Friction Tuning</h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
@@ -2374,6 +2933,59 @@ function App() {
                       <div className="text-xs border-t border-slate-150 pt-3">
                         <strong className="text-slate-700">📦 Component Friction</strong>
                         <p className="text-slate-500 mt-1">Sets the sliding friction coefficient of the selected object. Lower values allow materials to slip easily past support shelves and guide Rails, while high values prevent slipping.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {docsTab === 'scripting' && (
+                  <div className="flex flex-col gap-4">
+                    <h3 className="font-bold text-slate-800 text-lg flex items-center gap-1.5">💻 Control Scripting & Joint Names</h3>
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      Custom JavaScript control scripts run inside the physics solver loop on every physics time-step. To query state or apply forces, you pass string-based <strong>body names</strong> or <strong>joint names</strong> to the API.
+                    </p>
+                    
+                    <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 flex flex-col gap-4">
+                      <div className="text-xs">
+                        <strong className="text-slate-800 font-semibold flex items-center gap-1">🏷️ Where do joint & body names come from?</strong>
+                        <p className="text-slate-500 mt-1 leading-relaxed">
+                          All names map directly to the values you configure in the <strong>Properties Panel</strong> when a component is selected:
+                        </p>
+                        <ul className="list-disc pl-4 mt-1.5 text-slate-500 flex flex-col gap-1">
+                          <li><strong>Body Names:</strong> Equal to the <strong>Component Name</strong> at the top of the properties panel (e.g. <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">"cart"</code> or <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">"pole"</code>).</li>
+                          <li><strong>Joint Names:</strong> Configured in the <strong>Joint Name (for API)</strong> text input under the <strong>🔗 Joint Type</strong> card (e.g. <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">"cart_slide"</code> or <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">"pole_hinge"</code>).</li>
+                          <li><strong>Actuator/Motor Names:</strong> If you select "Enable Motor Drive", the actuator is automatically named by appending <code className="font-mono">_actuator</code> to the joint name (e.g. <code className="font-mono text-blue-600 bg-blue-50 px-1 rounded">"cart_slide_actuator"</code>).</li>
+                        </ul>
+                      </div>
+
+                      <div className="text-xs border-t border-slate-150 pt-3">
+                        <strong className="text-slate-800 font-semibold">🔄 Retrieving Sensor Data & Joint Positions</strong>
+                        <p className="text-slate-500 mt-1 leading-relaxed">
+                          Use the following API methods in your script:
+                        </p>
+                        <pre className="mt-2 bg-slate-950 text-emerald-400 p-2.5 rounded-lg font-mono text-[10px] leading-relaxed shadow-inner overflow-x-auto">
+{`// 1. Get positions & velocities of components in world space
+const [x, y, z] = api.getPosition('cart');
+const [vx, vy, vz] = api.getVelocity('cart');
+
+// 2. Get joint-aligned values (highly recommended for controls)
+const position = api.getJointPosition('cart_slide'); // Slider: meters, Hinge: radians
+const velocity = api.getJointVelocity('cart_slide'); // Slider: m/s, Hinge: rad/s`}
+                        </pre>
+                      </div>
+
+                      <div className="text-xs border-t border-slate-150 pt-3">
+                        <strong className="text-slate-800 font-semibold">⚡ Applying Forces & Controlling Motors</strong>
+                        <p className="text-slate-500 mt-1 leading-relaxed">
+                          Apply forces directly, or write a PD / LQR control loop to command motors:
+                        </p>
+                        <pre className="mt-2 bg-slate-950 text-emerald-400 p-2.5 rounded-lg font-mono text-[10px] leading-relaxed shadow-inner overflow-x-auto">
+{`// Apply torque or force aligned to the joint
+api.applyJointForce('cart_slide', 15.5); // Applies linear force
+
+// Command actuator motor velocity target
+api.setActuatorControl('cart_slide_actuator', 1.0); // Drive cart at 1.0 m/s`}
+                        </pre>
                       </div>
                     </div>
                   </div>

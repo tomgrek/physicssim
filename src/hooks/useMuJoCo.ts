@@ -6,7 +6,7 @@ import { compileToMJCF } from '../utils/mjcf';
 let isInitializing = false;
 
 export const useMuJoCoInit = () => {
-  const { mujoco, setEngine, sceneGraph, gravityZ } = useStore();
+  const { mujoco, setEngine, sceneGraph, gravityZ, floorFriction, windX, windY, density } = useStore();
 
   useEffect(() => {
     if (mujoco || isInitializing) return;
@@ -16,7 +16,7 @@ export const useMuJoCoInit = () => {
     const init = async () => {
       try {
         const mujocoModule = await load_mujoco();
-        const xml = compileToMJCF(sceneGraph, gravityZ);
+        const xml = compileToMJCF(sceneGraph, gravityZ, floorFriction, windX, windY, density);
         
         const m = mujocoModule.MjModel.from_xml_string(xml);
         const d = new mujocoModule.MjData(m);
