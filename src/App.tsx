@@ -4,7 +4,7 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useStore } from './store/useStore';
 import type { SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code } from 'lucide-react';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
@@ -196,10 +196,36 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             const by = data.xpos[bId * 3 + 1];
             const bz = data.xpos[bId * 3 + 2];
             
-            // Proportional spring force (k = 250.0)
-            data.xfrc_applied[bId * 6 + 0] = 250.0 * (dragTarget.x - bx);
-            data.xfrc_applied[bId * 6 + 1] = 250.0 * (dragTarget.y - by);
-            data.xfrc_applied[bId * 6 + 2] = 250.0 * (dragTarget.z - bz);
+            // Get linear velocities of the body in MuJoCo coordinates
+            const vx = data.cvel[bId * 6 + 3];
+            const vy = data.cvel[bId * 6 + 4];
+            const vz = data.cvel[bId * 6 + 5];
+            
+            const mass = model.body_mass[bId] || 1.0;
+            const K = 250.0;
+            // Critically damped spring coefficient: D = 2 * sqrt(mass * K)
+            const D = 2.0 * Math.sqrt(mass * K);
+            
+            // Calculate raw proportional spring force
+            let fx = K * (dragTarget.x - bx);
+            let fy = K * (dragTarget.y - by);
+            let fz = K * (dragTarget.z - bz);
+            
+            // Cap the maximum dragging force to a realistic multiple of gravity (2.5 * mass * g) 
+            // to make objects feel heavy and prevent rocket-like violent accelerations.
+            const maxForce = 2.5 * mass * 9.81;
+            const forceMag = Math.sqrt(fx * fx + fy * fy + fz * fz);
+            if (forceMag > maxForce) {
+              const scale = maxForce / forceMag;
+              fx *= scale;
+              fy *= scale;
+              fz *= scale;
+            }
+            
+            // Proportional-Derivative (PD) spring force applied to translational FORCE components (indices 0, 1, 2)
+            data.xfrc_applied[bId * 6 + 0] = fx - D * vx;
+            data.xfrc_applied[bId * 6 + 1] = fy - D * vy;
+            data.xfrc_applied[bId * 6 + 2] = fz - D * vz;
           }
         }
         
@@ -922,6 +948,7 @@ function App() {
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [showApiRef, setShowApiRef] = useState(false);
   const [propertiesWidth, setPropertiesWidth] = useState(380);
+  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1098,10 +1125,12 @@ function App() {
         const worldPos = getNodeWorldPos(sceneGraph.nodes, selectedNodeId) || [0, 0, 0];
         const offset = (type === 'capsule' || type === 'bob') ? [0, 0, -0.6] : [0.5, 0, 0];
         addComponent(type, [worldPos[0] + offset[0], worldPos[1] + offset[1], worldPos[2] + offset[2]]);
+        setIsLeftSidebarOpen(false);
         return;
       }
     }
     addComponent(type, [0, 0, 1.2]); // Spawn slightly above floor
+    setIsLeftSidebarOpen(false);
   };
 
   const renderHierarchyNode = useCallback((node: any, depth: number = 0): React.ReactNode => {
@@ -1121,7 +1150,10 @@ function App() {
     return (
       <div key={node.id} className="flex flex-col">
         <div 
-          onClick={() => setSelectedNodeId(node.id)} 
+          onClick={() => {
+            setSelectedNodeId(node.id);
+            setIsLeftSidebarOpen(false);
+          }} 
           style={{ paddingLeft: `${depth * 14 + 8}px` }}
           className={`flex items-center px-2 py-1.5 rounded-md border cursor-pointer transition-colors shadow-sm mb-1 ${isSelected ? 'bg-blue-50 border-blue-200 text-blue-600 font-semibold' : 'bg-white border-transparent hover:bg-slate-100/70 text-slate-600'}`}
         >
@@ -1132,37 +1164,46 @@ function App() {
         {node.children && node.children.map((child: any) => renderHierarchyNode(child, depth + 1))}
       </div>
     );
-  }, [selectedNodeId, setSelectedNodeId, findNodeById]);
+  }, [selectedNodeId, setSelectedNodeId, findNodeById, setIsLeftSidebarOpen]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-50 text-slate-900 font-sans">
-      <header className="glass-panel h-14 flex items-center justify-between px-6 z-10 border-b border-slate-200">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+      <header className="glass-panel h-14 flex items-center justify-between px-3 md:px-6 z-10 border-b border-slate-200">
+        <div className="flex items-center gap-2 md:gap-3">
+          {/* Mobile Sidebar Toggle */}
+          <button
+            onClick={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)}
+            className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors md:hidden focus:outline-none cursor-pointer flex-shrink-0"
+            title="Toggle Sidebar"
+          >
+            {isLeftSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+
+          <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
             <Settings2 className="w-5 h-5 physics-accent" />
           </div>
-          <h1 className="font-bold text-lg tracking-wide">
+          <h1 className="font-bold text-lg tracking-wide hidden sm:block">
             Physics <span className="text-blue-500">Expt</span>
           </h1>
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1.5 md:gap-4">
           {/* Presets Select */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Preset:</span>
+          <div className="flex items-center gap-1 md:gap-2">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:inline">Preset:</span>
             <select 
               onChange={(e) => loadPreset(e.target.value as any)}
-              className="px-3 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 text-sm font-medium text-slate-700 shadow-sm outline-none cursor-pointer focus:border-blue-500"
+              className="px-2 md:px-3 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 text-xs md:text-sm font-medium text-slate-700 shadow-sm outline-none cursor-pointer focus:border-blue-500 max-w-[100px] sm:max-w-[130px] md:max-w-none"
               defaultValue="pendulum"
             >
               <option value="pendulum">Double Pendulum</option>
               <option value="cubes">Stacked Cubes</option>
               <option value="gears">Gear System</option>
               <option value="machine">Gear Train Machine</option>
-              <option value="rack_pinion">Rack and Pinion Converter</option>
+              <option value="rack_pinion">Rack & Pinion</option>
               <option value="inclined_plane">Inclined Plane</option>
-              <option value="pulley_system">Pulley System Stand</option>
-              <option value="cartpole">Cartpole System</option>
+              <option value="pulley_system">Pulley Stand</option>
+              <option value="cartpole">Cartpole</option>
               <option value="newtons_cradle">Newton's Cradle</option>
               <option value="suspension_bridge">Suspension Bridge</option>
             </select>
@@ -1170,7 +1211,7 @@ function App() {
 
           <button
             onClick={() => setIsDocsOpen(true)}
-            className="flex items-center justify-center w-8 h-8 rounded-full border-2 border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
+            className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
             title="Documentation"
           >
             <Info className="w-4 h-4" />
@@ -1178,7 +1219,7 @@ function App() {
 
           <button 
             onClick={() => setSettingsOpen(!isSettingsOpen)}
-            className={`flex items-center justify-center w-8 h-8 rounded-full border-2 transition-colors focus:outline-none flex-shrink-0 cursor-pointer ${
+            className={`flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 transition-colors focus:outline-none flex-shrink-0 cursor-pointer ${
               isSettingsOpen 
                 ? 'bg-blue-50 border-blue-300 text-blue-600' 
                 : 'border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'
@@ -1191,30 +1232,31 @@ function App() {
           <button 
             onClick={togglePlay}
             disabled={!isLoaded}
-            className="flex items-center justify-center gap-2 w-28 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 disabled:opacity-50 shadow-sm"
+            className="flex items-center justify-center gap-1.5 w-8 h-8 md:w-28 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 disabled:opacity-50 shadow-sm flex-shrink-0 cursor-pointer"
+            title={isPlaying ? "Stop Simulation" : "Start Simulation"}
           >
             {isPlaying ? (
-              <><Square className="w-4 h-4 text-red-500" /> Stop</>
+              <><Square className="w-4 h-4 text-red-500" /><span className="hidden md:inline text-sm font-medium">Stop</span></>
             ) : (
-              <><Play className="w-4 h-4 text-emerald-500" /> Simulate</>
+              <><Play className="w-4 h-4 text-emerald-500" /><span className="hidden md:inline text-sm font-medium text-slate-700">Simulate</span></>
             )}
           </button>
 
           <button 
             onClick={resetSimulation}
             disabled={!isLoaded}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 disabled:opacity-50 shadow-sm text-slate-600 hover:text-slate-900"
+            className="flex items-center justify-center gap-1.5 w-8 h-8 md:w-auto md:px-4 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 disabled:opacity-50 shadow-sm text-slate-600 hover:text-slate-900 flex-shrink-0 cursor-pointer"
             title="Reset Simulation"
           >
-            <RotateCcw className="w-4 h-4" /> Reset
+            <RotateCcw className="w-4 h-4" /> <span className="hidden md:inline text-sm font-medium">Reset</span>
           </button>
 
           <button 
             onClick={() => setCameraView(cameraView === 'topDown' ? 'perspective' : 'topDown')}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full transition-colors border shadow-sm ${cameraView === 'topDown' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-600'}`}
+            className={`flex items-center justify-center gap-1.5 w-8 h-8 md:w-auto md:px-4 py-1.5 rounded-full transition-colors border shadow-sm flex-shrink-0 cursor-pointer ${cameraView === 'topDown' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-600'}`}
             title="Toggle Top Down View"
           >
-            <Eye className="w-4 h-4" /> {cameraView === 'topDown' ? 'Perspective' : 'Top Down'}
+            <Eye className="w-4 h-4" /> <span className="hidden md:inline text-sm font-medium">{cameraView === 'topDown' ? 'Perspective' : 'Top Down'}</span>
           </button>
         </div>
       </header>
@@ -1252,13 +1294,26 @@ function App() {
           </div>
         )}
 
+        {/* Mobile Sidebar Backdrop Scrim */}
+        {isLeftSidebarOpen && (
+          <div 
+            className="fixed inset-0 bg-slate-950/40 backdrop-blur-xs z-15 md:hidden transition-all duration-300"
+            onClick={() => setIsLeftSidebarOpen(false)}
+          />
+        )}
+
         {/* Left Sidebar */}
-        <aside className="w-56 shrink-0 glass-panel border-r border-slate-200 flex flex-col p-4 z-10 bg-white/50 overflow-y-auto">
+        <aside className={`w-64 md:w-56 shrink-0 glass-panel border-r border-slate-200 flex-col p-4 bg-white/95 md:bg-white/50 overflow-y-auto transition-transform duration-200 ease-in-out fixed md:relative inset-y-14 md:inset-auto left-0 z-20 shadow-2xl md:shadow-none ${
+          isLeftSidebarOpen ? 'flex translate-x-0' : 'hidden md:flex -translate-x-full md:translate-x-0'
+        }`}>
           <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Hierarchy</h2>
           <div className="flex flex-col gap-1.5 mb-6">
             <div 
               className={`px-3 py-1.5 rounded-md border cursor-pointer transition-colors shadow-sm flex items-center gap-1.5 ${!selectedNodeId ? 'bg-blue-50 border-blue-200 text-blue-600 font-bold' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
-              onClick={() => setSelectedNodeId(null)}
+              onClick={() => {
+                setSelectedNodeId(null);
+                setIsLeftSidebarOpen(false);
+              }}
             >
               <span>🌍</span> <span className="text-sm font-medium">Worldbody</span>
             </div>
@@ -1339,18 +1394,6 @@ function App() {
               </div>
             </div>
 
-            <div 
-              draggable 
-              onDragStart={(e) => handleDragStart(e, 'bob')} 
-              onClick={() => handleAddComponentClick('bob')}
-              className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
-            >
-              <CircleDot className="w-4 h-4 text-blue-500 group-hover:scale-110 transition-transform" />
-              <div className="flex flex-col">
-                <span className="text-xs font-semibold text-slate-700">Bob</span>
-                <span className="text-[10px] text-slate-400">Heavy pendulum weight</span>
-              </div>
-            </div>
 
             <div 
               draggable 
@@ -1461,12 +1504,12 @@ function App() {
         {selectedNode && (
           <aside 
             style={{ width: `${propertiesWidth}px` }} 
-            className="shrink-0 glass-panel border-l border-slate-200 flex flex-col p-4 z-10 bg-white/50 overflow-y-auto relative"
+            className="w-full! h-[50vh]! md:h-auto shrink-0 glass-panel border-t md:border-t-0 md:border-l border-slate-200 flex flex-col p-4 z-20 bg-white/95 md:bg-white/50 overflow-y-auto fixed md:relative left-0 right-0 bottom-0 top-auto md:top-auto shadow-2xl md:shadow-none transition-all duration-200"
           >
             {/* Elegant Resize Handle */}
             <div
               onMouseDown={handleMouseDown}
-              className="absolute top-0 left-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/40 transition-colors z-20 group flex items-center justify-center"
+              className="absolute top-0 left-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/40 transition-colors z-20 group hidden md:flex items-center justify-center"
               title="Drag to resize panel"
             >
               <div className="w-[2px] h-8 bg-slate-300 group-hover:bg-blue-500 group-active:bg-blue-600 rounded transition-colors" />
@@ -2238,6 +2281,7 @@ function App() {
                         }}
                         className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
                       />
+                      Enable Collisions
                     </label>
                   </div>
 
@@ -2265,7 +2309,7 @@ function App() {
                         const damping = -geom.solref[1];
                         if (damping >= 50) return 0.0;
                         const b = Math.exp(-damping / 20);
-                        return Math.min(0.95, Math.max(0.0, b));
+                        return Math.min(0.99, Math.max(0.0, b));
                       })();
                       return (
                         <div className="flex flex-col gap-1.5">
@@ -2276,17 +2320,18 @@ function App() {
                           <input 
                             type="range" 
                             min="0.0" 
-                            max="0.95" 
-                            step="0.05" 
+                            max="0.99" 
+                            step="0.01" 
                             className="w-full accent-blue-500 cursor-pointer" 
                             value={currentBounce} 
                             onChange={(e) => {
                               const bounce = parseFloat(e.target.value);
                               if (bounce > 0) {
                                 const damping = -20 * Math.log(bounce);
+                                const stiffness = bounce > 0.95 ? -1000 - (bounce - 0.95) * 475000 : -1000;
                                 updateNodeGeom(selectedNode.id, {
-                                  solref: [-1000, -damping],
-                                  solimp: [0.95, 0.99, 0.001, 0.5, 2]
+                                  solref: [stiffness, -damping],
+                                  solimp: [0.99, 0.99, 0.001, 0.5, 2]
                                 });
                               } else {
                                 // Omit or reset solref/solimp
@@ -2298,7 +2343,7 @@ function App() {
                             }}
                           />
                           <span className="text-[10px] text-slate-400 leading-tight">
-                            Controls elastic bounce restitution (elastic limit is 0.95).
+                            Controls elastic bounce restitution (elastic limit is 0.99).
                           </span>
                         </div>
                       );
