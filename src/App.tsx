@@ -378,6 +378,62 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
 
         mujoco.mj_step(model, data);
         
+        // Record physics history frame
+        if (!(window as any)._physics_history) {
+          (window as any)._physics_history = [];
+        }
+        if (data && data.time !== undefined && model && mujoco) {
+          const bodies: Record<string, any> = {};
+          const joints: Record<string, any> = {};
+          const collectNodeData = (nodesList: any[]) => {
+            if (!nodesList) return;
+            for (const node of nodesList) {
+              const bodyName = node.id;
+              const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+              if (bId !== -1) {
+                bodies[bodyName] = {
+                  pos: [
+                    data.xpos[bId * 3],
+                    data.xpos[bId * 3 + 1],
+                    data.xpos[bId * 3 + 2]
+                  ],
+                  vel: [
+                    data.cvel[bId * 6 + 3],
+                    data.cvel[bId * 6 + 4],
+                    data.cvel[bId * 6 + 5]
+                  ],
+                  angvel: [
+                    data.cvel[bId * 6 + 0],
+                    data.cvel[bId * 6 + 1],
+                    data.cvel[bId * 6 + 2]
+                  ]
+                };
+              }
+              node.joints?.forEach((j: any) => {
+                const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, j.name);
+                if (jId !== -1) {
+                  const qposadr = model.jnt_qposadr[jId];
+                  const dofadr = model.jnt_dofadr[jId];
+                  joints[j.name] = {
+                    pos: data.qpos[qposadr],
+                    vel: data.qvel[dofadr]
+                  };
+                }
+              });
+              if (node.children) collectNodeData(node.children);
+            }
+          };
+          collectNodeData(sceneGraph.nodes);
+          (window as any)._physics_history.push({
+            time: data.time,
+            bodies,
+            joints
+          });
+          if ((window as any)._physics_history.length > 5000) {
+            (window as any)._physics_history.shift();
+          }
+        }
+        
         // Safety check for NaN values in positions
         const nq = model.nq;
         for (let j = 0; j < nq; j++) {
