@@ -2,6 +2,7 @@
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
+import { useMCPBridge } from './hooks/useMCPBridge';
 import { useStore } from './store/useStore';
 import type { SceneNode } from './types/scene';
 import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu } from 'lucide-react';
@@ -24,6 +25,89 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
   const executeScripts = (nodes: any[]) => {
     if (!nodes) return;
     for (const node of nodes) {
+      if (node.isAerodynamic) {
+        // Generic aerodynamic logic for any primitive
+        const geom = node.geoms?.[0];
+        if (geom && geom.type === 'box') {
+          // Extract dimensions from the box geom
+          const halfX = geom.size[0] || 0.1;
+          const halfY = geom.size[1] || 0.1;
+          const wingArea = (halfX * 2) * (halfY * 2);
+          const chord = halfX * 2;
+          
+          const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
+          if (bId !== -1) {
+            const vx = data.cvel[bId * 6 + 3];
+            const vy = data.cvel[bId * 6 + 4];
+            const vz = data.cvel[bId * 6 + 5];
+            const wx = data.cvel[bId * 6 + 0];
+            const wy = data.cvel[bId * 6 + 1];
+            const wz = data.cvel[bId * 6 + 2];
+            
+            // Rotational damping
+            const DAMPING = 0.0005;
+            data.xfrc_applied[bId * 6 + 3] -= DAMPING * wx;
+            data.xfrc_applied[bId * 6 + 4] -= DAMPING * wy;
+            data.xfrc_applied[bId * 6 + 5] -= DAMPING * wz;
+            
+            const o = bId * 9;
+            const noseX = data.xmat[o+0], noseY = data.xmat[o+3], noseZ = data.xmat[o+6];
+            const spanX = data.xmat[o+1], spanY = data.xmat[o+4], spanZ = data.xmat[o+7];
+            const upX   = data.xmat[o+2], upY   = data.xmat[o+5], upZ   = data.xmat[o+8];
+            
+            const state = useStore.getState();
+            const windX = state.windX || 0;
+            const windY = state.windY || 0;
+            
+            const relVx = vx - windX;
+            const relVy = vy - windY;
+            const relVz = vz;
+            const relSpeed = Math.sqrt(relVx*relVx + relVy*relVy + relVz*relVz);
+            
+            if (relSpeed >= 0.1) {
+              const q = 0.5 * 1.225 * relSpeed * relSpeed;
+              const vDotNose = relVx*noseX + relVy*noseY + relVz*noseZ;
+              const cosAoA = Math.max(-1, Math.min(1, vDotNose / relSpeed));
+              const sinAoA = Math.sqrt(Math.max(0, 1 - cosAoA*cosAoA));
+              const aoaSign = (relVz - vDotNose*noseZ) < 0 ? 1 : -1;
+              const alpha = aoaSign * Math.asin(sinAoA);
+              
+              const stallFactor = Math.max(0, 1 - Math.pow(Math.abs(alpha) / 0.35, 3));
+              const CL = 3.0 * alpha * stallFactor;
+              const CD = 0.04 + CL * CL / (Math.PI * 4.5 * 0.8);
+              
+              const liftMag = CL * q * wingArea;
+              const dragMag = CD * q * wingArea;
+              
+              const vhx = relVx/relSpeed, vhy = relVy/relSpeed, vhz = relVz/relSpeed;
+              const upDotV = upX*vhx + upY*vhy + upZ*vhz;
+              let ldx = upX - upDotV*vhx;
+              let ldy = upY - upDotV*vhy;
+              let ldz = upZ - upDotV*vhz;
+              const ldMag = Math.sqrt(ldx*ldx + ldy*ldy + ldz*ldz);
+              if (ldMag > 1e-6) { ldx/=ldMag; ldy/=ldMag; ldz/=ldMag; }
+              
+              const ddx = -vhx, ddy = -vhy, ddz = -vhz;
+              
+              data.xfrc_applied[bId * 6 + 0] += liftMag*ldx + dragMag*ddx;
+              data.xfrc_applied[bId * 6 + 1] += liftMag*ldy + dragMag*ddy;
+              data.xfrc_applied[bId * 6 + 2] += liftMag*ldz + dragMag*ddz;
+              
+              const pitchMoment = -0.1 * alpha * stallFactor * q * wingArea * chord;
+              data.xfrc_applied[bId * 6 + 3] += pitchMoment * spanX;
+              data.xfrc_applied[bId * 6 + 4] += pitchMoment * spanY;
+              data.xfrc_applied[bId * 6 + 5] += pitchMoment * spanZ;
+              
+              const bankAngle = Math.atan2(upX*spanY - upY*spanX, upZ);
+              const rollRestoring = -0.1 * bankAngle * q * wingArea * chord;
+              data.xfrc_applied[bId * 6 + 3] += rollRestoring * noseX;
+              data.xfrc_applied[bId * 6 + 4] += rollRestoring * noseY;
+              data.xfrc_applied[bId * 6 + 5] += rollRestoring * noseZ;
+            }
+          }
+        }
+      }
+
       if (node.script && node.script.trim() !== '') {
         let fn = scriptCache.current[node.id];
         if (!fn) {
@@ -202,6 +286,8 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
   };
   
   useFrame((_state, delta) => {
+    if ((window as any).DISABLE_USEFRAME) return;
+    
     // Safety check: ensure closure model/data match current store active ones
     const activeModel = useStore.getState().model;
     const activeData = useStore.getState().data;
@@ -299,13 +385,14 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             console.error(`[PhysicsLoop] NaN detected in qpos at index ${j}! Stopping simulation.`);
             (window as any).DISABLE_USEFRAME = true;
             // Force pause in state
-            useStore.getState().togglePlay();
+            useStore.setState({ isPlaying: false });
             return;
           }
         }
       } catch (e) {
         console.error("Simulation step error:", e);
-        useStore.getState().togglePlay();
+        useStore.setState({ isPlaying: false });
+        (window as any).DISABLE_USEFRAME = true;
         return;
       }
     }
@@ -1036,7 +1123,7 @@ function App() {
     updateNodeJointsList, deleteNode, renameNode,
     addPusherPeg, deletePusherPeg, updatePusherPeg, updateNodeRotation,
     updateWedgeParams, updatePulleyParams, updateRopeParams,
-    parentUnderSelected, setParentUnderSelected, updateNodeScript
+    parentUnderSelected, setParentUnderSelected, updateNodeScript, updateNode
   } = useStore();
 
   // Helper to find a node by ID in hierarchy
@@ -1223,6 +1310,8 @@ function App() {
       </div>
     );
   }, [selectedNodeId, setSelectedNodeId, findNodeById, setIsLeftSidebarOpen]);
+
+  useMCPBridge();
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-50 text-slate-900 font-sans">
@@ -1580,7 +1669,23 @@ function App() {
             </h2>
             
             <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5 p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
+                <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-700">Aerodynamics</div>
+                    <div className="text-[10px] text-slate-500">Apply lift and drag automatically</div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      className="sr-only peer"
+                      checked={selectedNode.isAerodynamic || false}
+                      onChange={(e) => updateNode(selectedNode.id, { isAerodynamic: e.target.checked })}
+                    />
+                    <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-500"></div>
+                  </label>
+                </div>
+
+                <div className="flex flex-col gap-1.5 p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
                 <div className="flex justify-between items-center">
                   <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Component Name</label>
                   <span className="font-mono text-[9px] text-blue-600 font-semibold bg-blue-50 px-1 py-0.5 rounded cursor-pointer select-all border border-blue-100" title="Body API Reference Name. Click to select/copy.">
@@ -1658,6 +1763,33 @@ function App() {
                       className="w-full px-2 py-1 border border-slate-200 rounded text-xs font-mono bg-white text-slate-800 outline-none focus:border-blue-500 shadow-sm"
                       placeholder="e.g. cart_slide"
                     />
+                  </div>
+                )}
+                
+                {/* Free Joint Launch Velocity */}
+                {selectedNode.joints?.length > 0 && selectedNode.joints[0].type === 'free' && (
+                  <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-slate-100">
+                    <h3 className="text-xs font-semibold text-slate-600 mb-1">Launch Velocity (m/s)</h3>
+                    {['X (Forward)', 'Y (Side)', 'Z (Up)'].map((label, i) => (
+                      <div key={label} className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-slate-500 flex justify-between">
+                          {label} <span>{selectedNode.joints[0].initialVelocity?.[i] || 0}</span>
+                        </label>
+                        <input
+                          type="range"
+                          min="-20"
+                          max="20"
+                          step="0.5"
+                          value={selectedNode.joints[0].initialVelocity?.[i] || 0}
+                          onChange={(e) => {
+                            const vel = [...(selectedNode.joints[0].initialVelocity || [0,0,0,0,0,0])];
+                            vel[i] = parseFloat(e.target.value);
+                            updateNodeJoint(selectedNode.id, { ...selectedNode.joints[0], initialVelocity: vel });
+                          }}
+                          className="w-full accent-blue-500 cursor-pointer"
+                        />
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -1848,8 +1980,8 @@ function App() {
                       </label>
                       <input 
                         type="range" 
-                        min="0.15" 
-                        max="2.0" 
+                        min="0.05" 
+                        max="5.0" 
                         step="0.01" 
                         value={gearRadius} 
                         onChange={(e) => {
@@ -1868,8 +2000,8 @@ function App() {
                         </label>
                         <input 
                           type="range" 
-                          min="0.05" 
-                          max={gearRadius * 1.5} 
+                          min="0.01" 
+                          max="5.0" 
                           step="0.01" 
                           value={pegGeom.pos[0]} 
                           onChange={(e) => {
@@ -1883,8 +2015,8 @@ function App() {
                         </label>
                         <input 
                           type="range" 
-                          min="0.01" 
-                          max="0.10" 
+                          min="0.005" 
+                          max="0.5" 
                           step="0.005" 
                           value={pegGeom.size[0]} 
                           onChange={(e) => {
@@ -1898,8 +2030,8 @@ function App() {
                         </label>
                         <input 
                           type="range" 
-                          min="0.02" 
-                          max="0.30" 
+                          min="0.01" 
+                          max="1.0" 
                           step="0.01" 
                           value={pegGeom.size[1]} 
                           onChange={(e) => {
@@ -1936,7 +2068,7 @@ function App() {
                         <span>🔗 Joint Damping</span>
                       </h3>
                       <label className="text-xs font-medium text-slate-500 flex justify-between">Damping <span>{joint.damping}</span></label>
-                      <input type="range" min="0" max="100" step="0.1" value={joint.damping} onChange={(e) => updateNodeJoint(selectedNode.id, {damping: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
+                      <input type="range" min="0" max="500" step="0.1" value={joint.damping} onChange={(e) => updateNodeJoint(selectedNode.id, {damping: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
                     </div>
                   )}
 
@@ -1953,8 +2085,8 @@ function App() {
                         <input 
                           type="range" 
                           min="0" 
-                          max="1000" 
-                          step="1" 
+                          max="5000" 
+                          step="10" 
                           value={joint.stiffness || 0} 
                           onChange={(e) => updateNodeJoint(selectedNode.id, { stiffness: parseFloat(e.target.value) })}
                           className="w-full accent-blue-500 cursor-pointer" 
@@ -1968,8 +2100,8 @@ function App() {
                           </label>
                           <input 
                             type="range" 
-                            min={joint.type === 'slide' ? -5.0 : -180} 
-                            max={joint.type === 'slide' ? 5.0 : 180} 
+                            min={joint.type === 'slide' ? -20.0 : -360} 
+                            max={joint.type === 'slide' ? 20.0 : 360} 
                             step={joint.type === 'slide' ? 0.05 : 1} 
                             value={joint.springref || 0} 
                             onChange={(e) => updateNodeJoint(selectedNode.id, { springref: parseFloat(e.target.value) })}
@@ -2017,8 +2149,8 @@ function App() {
                               </label>
                               <input 
                                 type="range" 
-                                min={isSlide ? -5.0 : -180}
-                                max={isSlide ? 5.0 : 180}
+                                min={isSlide ? -20.0 : -360}
+                                max={isSlide ? 20.0 : 360}
                                 step={isSlide ? 0.05 : 1}
                                 value={minVal}
                                 onChange={(e) => {
@@ -2036,8 +2168,8 @@ function App() {
                               </label>
                               <input 
                                 type="range" 
-                                min={isSlide ? -5.0 : -180}
-                                max={isSlide ? 5.0 : 180}
+                                min={isSlide ? -20.0 : -360}
+                                max={isSlide ? 20.0 : 360}
                                 step={isSlide ? 0.05 : 1}
                                 value={maxVal}
                                 onChange={(e) => {
@@ -2068,9 +2200,9 @@ function App() {
                         </label>
                         <input 
                           type="range" 
-                          min={isTorque ? "-100" : "-20"} 
-                          max={isTorque ? "100" : "20"} 
-                          step={isTorque ? "1" : "0.5"} 
+                          min={isTorque ? "-1000" : "-100"} 
+                          max={isTorque ? "1000" : "100"} 
+                          step={isTorque ? "1" : "0.1"} 
                           value={joint.actuator.ctrlValue || 0} 
                           onChange={(e) => {
                             const val = parseFloat(e.target.value);
@@ -2310,7 +2442,7 @@ function App() {
                   <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
                     <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">Mass</h3>
                     <label className="text-xs font-medium text-slate-500 flex justify-between">Value <span>{geom.mass} kg</span></label>
-                    <input type="range" min="0.1" max="50" step="0.1" value={geom.mass} onChange={(e) => updateNodeGeom(selectedNode.id, {mass: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
+                    <input type="range" min="0" max="50" step="0.01" value={geom.mass} onChange={(e) => updateNodeGeom(selectedNode.id, {mass: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
                   </div>
 
                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">

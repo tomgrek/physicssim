@@ -35,6 +35,7 @@ export interface SceneJoint {
     gear?: number; // Optional gear ratio
     ctrlValue?: number; // Target speed or force from UI
   };
+  initialVelocity?: number[]; // [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
 }
 
 export interface SceneNode {
@@ -64,6 +65,7 @@ export interface SceneNode {
   pulleyRadius?: number;
   isPulleyRope?: boolean;
   pulleyWheelId?: string;
+  isAerodynamic?: boolean;
   script?: string;
 }
 

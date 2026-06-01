@@ -725,121 +725,66 @@ export const suspensionBridgePreset: SceneGraph = {
 export const paperPlanePreset: SceneGraph = {
   nodes: [
     {
-      id: 'paper_plane',
-      name: 'paper_plane',
+      id: 'paper_plane_wing',
+      name: 'paper_plane_wing',
       type: 'body',
       pos: [0, 0, 3.5],
-      euler: [0, 8, 0],       // 8° nose-down pitch: natural glide angle
+      euler: [0, 8, 0],
+      isAerodynamic: true,
       joints: [
-        { name: 'plane_free', type: 'free' }
+        { name: 'plane_free', type: 'free', initialVelocity: [4.0, 0.0, 0.5, 0.0, 0.0, 0.0] }
       ],
       geoms: [
-        // Main wing — wide flat box
         {
-          name: 'plane_wing',
+          name: 'wing_geom',
           type: 'box',
           size: [0.06, 0.28, 0.003],
           rgba: [0.96, 0.96, 0.94, 1],
           mass: 0.004,
           condim: 3,
           friction: [0.3, 0.005, 0.0005]
-        },
-        // Fuselage / spine
-        {
-          name: 'plane_body',
-          type: 'box',
-          size: [0.13, 0.018, 0.012],
-          pos: [0, 0, 0],
-          rgba: [0.88, 0.88, 0.86, 1],
-          mass: 0.003,
-          condim: 3
-        },
-        // Nose weight — keeps CoM in front of wing centre
-        {
-          name: 'plane_nose',
-          type: 'sphere',
-          size: [0.011],
-          pos: [0.13, 0, 0],
-          rgba: [0.75, 0.75, 0.72, 1],
-          mass: 0.003,
-          condim: 3
         }
       ],
-      script: `// =============================================
-// Paper Plane Aerodynamics Script
-// =============================================
-
-const WING_AREA   = 0.042;
-const CL_ALPHA    = 3.0;     // lift-curve slope
-const CD0         = 0.04;    // zero-lift drag
-const CM_ALPHA    = -0.1;    // reduced pitching-moment slope for stability
-const RHO         = 1.225;
-const CHORD       = 0.12;
-const DIHEDRAL_K  = 0.1;     // reduced roll-restoring torque gain
-const DAMPING     = 0.0005;  // angular damping to prevent explosive oscillations
-
-const [vx, vy, vz] = api.getVelocity();
-const [wx, wy, wz] = api.getAngularVelocity();
-const speed = Math.sqrt(vx*vx + vy*vy + vz*vz);
-
-// Apply artificial rotational damping to prevent physics explosion (NaNs)
-api.applyTorque([-DAMPING * wx, -DAMPING * wy, -DAMPING * wz]);
-
-if (speed < 0.1) return;
-
-const R = api.getOrientation();
-const noseX = R[0]; const noseY = R[3]; const noseZ = R[6];
-const spanX = R[1]; const spanY = R[4]; const spanZ = R[7];
-const upX   = R[2]; const upY   = R[5]; const upZ   = R[8];
-
-const [windX, windY] = api.getWind();
-const relVx = vx - windX;
-const relVy = vy - windY;
-const relVz = vz;
-const relSpeed = Math.sqrt(relVx*relVx + relVy*relVy + relVz*relVz);
-if (relSpeed < 0.1) return;
-
-const q = 0.5 * RHO * relSpeed * relSpeed;
-
-const vDotNose = relVx*noseX + relVy*noseY + relVz*noseZ;
-const cosAoA   = Math.max(-1, Math.min(1, vDotNose / relSpeed));
-const sinAoA   = Math.sqrt(Math.max(0, 1 - cosAoA*cosAoA));
-const aoaSign  = (relVz - vDotNose*noseZ) < 0 ? 1 : -1;
-const alpha    = aoaSign * Math.asin(sinAoA);
-
-const alphaStall = 0.35;
-const stallFactor = Math.max(0, 1 - Math.pow(Math.abs(alpha) / alphaStall, 3));
-
-const CL = CL_ALPHA * alpha * stallFactor;
-const CD = CD0 + CL * CL / (Math.PI * 4.5 * 0.8);
-
-const liftMag = CL * q * WING_AREA;
-const dragMag = CD * q * WING_AREA;
-
-const vhx = relVx/relSpeed, vhy = relVy/relSpeed, vhz = relVz/relSpeed;
-const upDotV = upX*vhx + upY*vhy + upZ*vhz;
-let ldx = upX - upDotV*vhx;
-let ldy = upY - upDotV*vhy;
-let ldz = upZ - upDotV*vhz;
-const ldMag = Math.sqrt(ldx*ldx + ldy*ldy + ldz*ldz);
-if (ldMag > 1e-6) { ldx/=ldMag; ldy/=ldMag; ldz/=ldMag; }
-
-const ddx = -vhx, ddy = -vhy, ddz = -vhz;
-
-api.applyForce([
-  liftMag*ldx + dragMag*ddx,
-  liftMag*ldy + dragMag*ddy,
-  liftMag*ldz + dragMag*ddz
-]);
-
-const pitchMoment = CM_ALPHA * alpha * stallFactor * q * WING_AREA * CHORD;
-api.applyTorque([pitchMoment * spanX, pitchMoment * spanY, pitchMoment * spanZ]);
-
-const bankAngle = Math.atan2(upX*spanY - upY*spanX, upZ);
-const rollRestoring = -DIHEDRAL_K * bankAngle * q * WING_AREA * CHORD;
-api.applyTorque([rollRestoring * noseX, rollRestoring * noseY, rollRestoring * noseZ]);
-`,
-      children: []
+      children: [
+        {
+          id: 'paper_plane_spine',
+          name: 'paper_plane_spine',
+          type: 'body',
+          pos: [0, 0, 0],
+          euler: [0, 0, 0],
+          joints: [],
+          geoms: [
+            {
+              name: 'spine_geom',
+              type: 'box',
+              size: [0.13, 0.018, 0.012],
+              rgba: [0.88, 0.88, 0.86, 1],
+              mass: 0.003,
+              condim: 3
+            }
+          ],
+          children: []
+        },
+        {
+          id: 'paper_plane_nose',
+          name: 'paper_plane_nose',
+          type: 'body',
+          pos: [0.13, 0, 0],
+          euler: [0, 0, 0],
+          joints: [],
+          geoms: [
+            {
+              name: 'nose_geom',
+              type: 'sphere',
+              size: [0.011],
+              rgba: [0.75, 0.75, 0.72, 1],
+              mass: 0.003,
+              condim: 3
+            }
+          ],
+          children: []
+        }
+      ]
     }
   ]
 };
