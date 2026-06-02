@@ -1464,6 +1464,7 @@ function App() {
               <option value="paper_plane">✈ Paper Plane</option>
               <option value="monkey_head">🐵 Monkey Head</option>
               <option value="golden_gate">🌉 Golden Gate Bridge</option>
+              <option value="golden_gate_mesh">🌉 Golden Gate (Mesh)</option>
             </select>
           </div>
 

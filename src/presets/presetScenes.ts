@@ -878,6 +878,93 @@ export const goldenGateBridgePreset: SceneGraph = (() => {
   };
 })();
 
+// Golden Gate bridge — mesh version (visual/decorative only, no simulation).
+// Vertices in Three.js Y-up world space: X=right, Y=up, Z=toward camera.
+export const goldenGateMeshPreset: SceneGraph = (() => {
+  // box(cx,cy,cz, hx,hy,hz) — Three.js Y-up coords: X=right, Y=up, Z=depth
+  function box(cx: number, cy: number, cz: number, hx: number, hy: number, hz: number) {
+    const v = [
+      cx-hx, cy-hy, cz-hz,  cx+hx, cy-hy, cz-hz,  cx+hx, cy+hy, cz-hz,  cx-hx, cy+hy, cz-hz,
+      cx-hx, cy-hy, cz+hz,  cx+hx, cy-hy, cz+hz,  cx+hx, cy+hy, cz+hz,  cx-hx, cy+hy, cz+hz,
+    ];
+    const f = [0,1,2,0,2,3, 4,6,5,4,7,6, 0,4,5,0,5,1, 3,2,6,3,6,7, 0,3,7,0,7,4, 1,5,6,1,6,2];
+    return { v, f };
+  }
+  function merge(parts: {v:number[];f:number[]}[]) {
+    const verts: number[] = [], faces: number[] = [];
+    let off = 0;
+    for (const {v, f} of parts) { verts.push(...v); faces.push(...f.map(i => i+off)); off += v.length/3; }
+    return { vertices: verts, faces };
+  }
+
+  const ORANGE = [0.80, 0.25, 0.08, 1] as number[];
+  const GREY   = [0.55, 0.55, 0.55, 1] as number[];
+  const CABLE  = [0.60, 0.18, 0.05, 1] as number[];
+  const HANGER = [0.65, 0.65, 0.65, 1] as number[];
+
+  // Deck: flat plank spanning X, thin in Y, shallow in Z
+  const deck = box(0, 0.3, 0,  4.8, 0.06, 0.3);
+
+  // Tower H-frames: legs tall in Y, at X=±4.8
+  function makeTower(cx: number) {
+    return merge([
+      box(cx, 1.5, -0.3,  0.08, 1.5, 0.08),  // front leg
+      box(cx, 1.5,  0.3,  0.08, 1.5, 0.08),  // back leg
+      box(cx, 0.8,  0,    0.08, 0.06, 0.38),  // lower crossbeam
+      box(cx, 2.4,  0,    0.08, 0.06, 0.38),  // upper crossbeam
+    ]);
+  }
+
+  // Parabolic cables: series of boxes along arc, front and back
+  function makeCable(cz: number) {
+    const parts = [];
+    const N = 24;
+    for (let i = 0; i < N; i++) {
+      const t0 = i/N, t1 = (i+1)/N;
+      const x0 = -4.8 + t0*9.6, x1 = -4.8 + t1*9.6;
+      const y0 = 3.0 - 6*t0*(1-t0), y1 = 3.0 - 6*t1*(1-t1);
+      const len = Math.sqrt((x1-x0)**2 + (y1-y0)**2)/2 + 0.01;
+      parts.push(box((x0+x1)/2, (y0+y1)/2, cz,  len, 0.04, 0.04));
+    }
+    return merge(parts);
+  }
+
+  // Vertical hangers
+  function makeHangers(cz: number) {
+    const parts = [];
+    for (let i = 1; i < 14; i++) {
+      const t = i/14;
+      const x = -4.8 + t*9.6;
+      const yTop = 3.0 - 6*t*(1-t);
+      parts.push(box(x, (yTop+0.36)/2, cz,  0.02, (yTop-0.36)/2, 0.02));
+    }
+    return merge(parts);
+  }
+
+  const towerL  = makeTower(-4.8);
+  const towerR  = makeTower( 4.8);
+  const cable1  = makeCable(-0.3);
+  const cable2  = makeCable( 0.3);
+  const hang1   = makeHangers(-0.3);
+  const hang2   = makeHangers( 0.3);
+
+  return {
+    nodes: [{
+      id: 'gg_mesh', name: 'gg_mesh', type: 'body' as const, pos: [0, 0, 0], joints: [],
+      geoms: [
+        { name: 'gg_deck',    type: 'mesh' as const, size: [1], rgba: GREY,   vertices: deck.v,          faces: deck.f          },
+        { name: 'gg_tower_l', type: 'mesh' as const, size: [1], rgba: ORANGE, vertices: towerL.vertices,  faces: towerL.faces    },
+        { name: 'gg_tower_r', type: 'mesh' as const, size: [1], rgba: ORANGE, vertices: towerR.vertices,  faces: towerR.faces    },
+        { name: 'gg_cable_1', type: 'mesh' as const, size: [1], rgba: CABLE,  vertices: cable1.vertices,  faces: cable1.faces    },
+        { name: 'gg_cable_2', type: 'mesh' as const, size: [1], rgba: CABLE,  vertices: cable2.vertices,  faces: cable2.faces    },
+        { name: 'gg_hang_1',  type: 'mesh' as const, size: [1], rgba: HANGER, vertices: hang1.vertices,   faces: hang1.faces     },
+        { name: 'gg_hang_2',  type: 'mesh' as const, size: [1], rgba: HANGER, vertices: hang2.vertices,   faces: hang2.faces     },
+      ],
+      children: [],
+    }]
+  };
+})();
+
 export const PRESETS = {
   pendulum: {
     name: 'Double Pendulum',
@@ -930,5 +1017,9 @@ export const PRESETS = {
   golden_gate: {
     name: 'Golden Gate Bridge',
     scene: goldenGateBridgePreset
+  },
+  golden_gate_mesh: {
+    name: 'Golden Gate (Mesh)',
+    scene: goldenGateMeshPreset
   }
 };

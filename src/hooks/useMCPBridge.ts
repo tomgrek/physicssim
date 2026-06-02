@@ -205,7 +205,7 @@ export function useMCPBridge() {
               cylinder:  'radius and half-height [r, hh]',
               ellipsoid: 'semi-axes [rx, ry, rz]',
               plane:     'ignored by MuJoCo (infinite plane) — set to [0, 0, 1] or any non-zero',
-              mesh:      'not used — shape defined by vertices and faces fields instead. IMPORTANT: vertices are in Three.js world space (X=right, Y=up, Z=toward camera), NOT MuJoCo Z-up space.',
+              mesh:      'not used — shape defined by vertices and faces fields instead. IMPORTANT: (1) vertices are in Three.js world space (X=right, Y=up, Z=toward camera), NOT MuJoCo Z-up space. (2) MESH GEOMS ARE VISUAL ONLY — they do not simulate, move, or collide. Use only for static decorative geometry.',
             },
             jointTypes: ['hinge', 'slide', 'ball', 'free'],
             geomFields: {
@@ -257,6 +257,8 @@ export function useMCPBridge() {
               'Mesh flat plank example: box(cx, 0.3, cz, halfSpan, 0.06, halfWidth) — small hy=thickness, large hx=span',
               'Mesh tetrahedron example: vertices=[0,0,0, 1,0,0, 0.5,1,0, 0.5,0.5,1], faces=[0,1,2, 0,1,3, 1,2,3, 0,2,3]',
               'Do NOT apply any coordinate conversion to mesh vertices — they go directly into Three.js BufferGeometry',
+              'IMPORTANT: mesh geoms are VISUAL ONLY. They do not move, simulate, or collide. For physics use primitives (box/sphere/capsule/cylinder/ellipsoid). Meshes are only useful for static decorative geometry.',
+              'Good mesh use cases: static scenery, decorative structures, environment dressing, visual shells around primitive collision proxies',
             ],
           };
 
