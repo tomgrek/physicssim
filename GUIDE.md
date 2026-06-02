@@ -129,6 +129,20 @@ box(-2, 1.5, 0,  0.08, 1.5, 0.08) // vertical post: tall in Y, narrow in X and Z
 - Mesh groups must have no `ref`, no `initialPos`, no `quaternion` applied — just `<group><mesh geometry={...} /></group>`.
 - `pos`, `quat`, `euler` fields on a mesh `SceneGeom` are ignored for rendering (they only affect MuJoCo physics). Bake all positions into the vertex data.
 
+### Mesh geoms are VISUAL ONLY — not simulated
+
+**Mesh geoms do not participate in physics simulation.** Their vertex data is used only by the Three.js renderer; it is never read back from MuJoCo at runtime. Consequences:
+
+- A mesh body **will not move** even if it has a free joint — the rendered vertices are frozen at their authored positions.
+- Mesh geoms **do not collide** with anything during simulation (MuJoCo does register the mesh asset for collision, but the visual representation never updates to reflect body motion).
+- Use meshes only for **static scenery** that will never move: backgrounds, decorative structures, architectural detail.
+- For anything that needs to move, bounce, sway, or collide visually — use primitive geoms (`box`, `sphere`, `capsule`, `cylinder`, `ellipsoid`).
+
+**Useful applications for mesh:**
+- Static environment dressing (buildings, terrain features, decorative bridges)
+- High-detail visual shells around a simpler primitive collision proxy
+- Reference geometry or scale indicators that don't interact with the scene
+
 ### Ellipsoid rendering
 Ellipsoids are rendered as a unit sphere scaled by `[rx, ry, rz]` (the three semi-axes from `geom_size`). This means normals are distorted under non-uniform scale — lighting looks slightly off on very squashed shapes, but it's visually acceptable and physically correct (MuJoCo uses the real ellipsoid for collision).
 
