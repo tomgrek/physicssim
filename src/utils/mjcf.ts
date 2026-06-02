@@ -1,9 +1,13 @@
 import type { SceneGraph, SceneNode, SceneGeom, SceneJoint } from '../types/scene';
 
 const buildGeom = (geom: SceneGeom) => {
-  let attrs = `name="${geom.name}" type="${geom.type}" size="${geom.size.join(' ')}"`;
+  // mesh geoms reference an asset by name; size is not emitted for mesh type
+  const isMesh = geom.type === 'mesh';
+  let attrs = `name="${geom.name}" type="${geom.type}"`;
+  if (!isMesh) attrs += ` size="${geom.size.join(' ')}"`;
+  if (isMesh) attrs += ` mesh="${geom.name}"`;
   if (geom.rgba) attrs += ` rgba="${geom.rgba.join(' ')}"`;
-  if (geom.fromto) attrs += ` fromto="${geom.fromto.join(' ')}"`;
+  if (!isMesh && geom.fromto) attrs += ` fromto="${geom.fromto.join(' ')}"`;
   if (geom.pos) attrs += ` pos="${geom.pos.join(' ')}"`;
   if (geom.quat) {
     attrs += ` quat="${geom.quat.join(' ')}"`;
@@ -65,7 +69,27 @@ export const compileToMJCF = (
   density: number = 0
 ) => {
   const sceneCopy = JSON.parse(JSON.stringify(scene)) as SceneGraph;
-  
+
+  // Collect all mesh geoms so we can emit <asset> entries for them
+  const meshAssets: SceneGeom[] = [];
+  const collectMeshAssets = (nodes: SceneNode[]) => {
+    for (const node of nodes) {
+      for (const g of node.geoms) {
+        if (g.type === 'mesh' && g.vertices && g.faces) {
+          meshAssets.push(g);
+        }
+      }
+      collectMeshAssets(node.children);
+    }
+  };
+  collectMeshAssets(sceneCopy.nodes);
+
+  const assetXml = meshAssets.length > 0
+    ? `\n  <asset>\n${meshAssets.map(g =>
+        `    <mesh name="${g.name}" vertex="${g.vertices!.join(' ')}" face="${g.faces!.join(' ')}" />`
+      ).join('\n')}\n  </asset>`
+    : '';
+
   const preprocessNodes = (nodes: SceneNode[]) => {
     if (!nodes) return;
     for (const node of nodes) {
@@ -309,7 +333,7 @@ export const compileToMJCF = (
 
   return `
 <mujoco model="dynamic_scene">
-  <option timestep="0.001" gravity="0 0 ${gravityZ}" wind="${windX} ${windY} 0" density="${density}" />
+  <option timestep="0.001" gravity="0 0 ${gravityZ}" wind="${windX} ${windY} 0" density="${density}" />${assetXml}
   <default>
     <geom solref="-1000 -100" solimp="0.95 0.99 0.001 0.5 2" />
   </default>

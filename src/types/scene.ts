@@ -1,4 +1,4 @@
-export type GeomType = 'capsule' | 'sphere' | 'box' | 'plane' | 'cylinder';
+export type GeomType = 'capsule' | 'sphere' | 'box' | 'plane' | 'cylinder' | 'ellipsoid' | 'mesh';
 export type JointType = 'hinge' | 'slide' | 'ball' | 'free';
 
 export interface SceneGeom {
@@ -17,6 +17,10 @@ export interface SceneGeom {
   friction?: number[];
   solref?: number[];
   solimp?: number[];
+  // For type='mesh': flat array of vertex positions (x0,y0,z0, x1,y1,z1, ...) and
+  // flat array of triangle face indices (i0,j0,k0, i1,j1,k1, ...).
+  vertices?: number[];
+  faces?: number[];
 }
 
 export interface SceneJoint {

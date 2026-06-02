@@ -97,7 +97,7 @@ export interface PhysicsState {
   setParentUnderSelected: (val: boolean) => void;
   addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope', position: number[]) => void;
   recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => void;
-  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole' | 'newtons_cradle' | 'suspension_bridge' | 'paper_plane') => void;
+  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole' | 'newtons_cradle' | 'suspension_bridge' | 'paper_plane' | 'monkey_head' | 'golden_gate') => void;
   resetSimulation: () => void;
 }
 

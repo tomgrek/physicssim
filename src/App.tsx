@@ -610,7 +610,7 @@ const WedgeGeometry = ({ width = 2.0, depth = 1.0, height = 0.5 }: { width: numb
 
 
 // Dynamic Geom Renderer
-const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedNodeId, setSelectedNodeId }: any) => {
+const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedNodeId, setSelectedNodeId, vertices, faces }: any) => {
   const meshRef = useRef<THREE.Group>(null);
   const isPlaying = useStore(state => state.isPlaying);
   
@@ -648,6 +648,7 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
       if (type === 'box') return [r * 2, hl * 2, hz * 2];
       if (type === 'capsule') return [r, hl * 2, 4, 16];
       if (type === 'cylinder') return [r, hl];
+      if (type === 'ellipsoid') return [r, hl, hz];
       return [r];
     } catch (e) {
       console.error(`[DynamicGeom ${name}] geometryArgs Error:`, e);
@@ -733,6 +734,7 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
     if (model !== activeModel || data !== activeData) return;
 
     if ((window as any).DISABLE_USEFRAME) return;
+    if (type === 'mesh') return;
     if (!meshRef.current || geomId === -1 || !model || !data) return;
     
     try {
@@ -759,12 +761,34 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
     }
   });
 
+  // Build Three.js BufferGeometry from inline vertex/face arrays for mesh type
+  const meshBufferGeometry = useMemo(() => {
+    if (type !== 'mesh' || !vertices || !faces) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(faces), 1));
+    geo.computeVertexNormals();
+    return geo;
+  }, [type, vertices, faces]);
+
+  if (type === 'mesh') {
+    if (!meshBufferGeometry) return null;
+    // Vertices are baked in Three.js world space — no position/rotation applied.
+    return (
+      <group>
+        <mesh castShadow receiveShadow geometry={meshBufferGeometry} {...dragHandlers}>
+          <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} side={THREE.DoubleSide} />
+        </mesh>
+      </group>
+    );
+  }
+
   if (geomId === -1 || !geometryArgs || geometryArgs.length === 0 || geometryArgs.some(arg => arg === undefined || isNaN(arg))) {
     return null;
   }
 
   return (
-    <group 
+    <group
       ref={meshRef}
       position={initialPos}
       quaternion={new THREE.Quaternion(...initialQuat)}
@@ -782,6 +806,11 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
       ) : type === 'box' ? (
         <mesh castShadow receiveShadow {...dragHandlers}>
           <boxGeometry args={geometryArgs as any} />
+          <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
+        </mesh>
+      ) : type === 'ellipsoid' ? (
+        <mesh castShadow receiveShadow scale={[geometryArgs[0], geometryArgs[1], geometryArgs[2]]} {...dragHandlers}>
+          <sphereGeometry args={[1, 32, 32]} />
           <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
         </mesh>
       ) : null}
@@ -1114,25 +1143,48 @@ const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSele
 
   if (!model || !data || !mujoco) return null;
   
+  const primitiveGeoms = geoms.filter(g => g.type !== 'mesh');
+  const meshGeoms = geoms.filter(g => g.type === 'mesh');
+
   return (
-    <group rotation={[-Math.PI / 2, 0, 0]}>
-      {geoms.map(g => (
-        <DynamicGeom 
-          key={g.name} 
+    <>
+      {/* Primitive geoms live in a Z-up→Y-up rotated group */}
+      <group rotation={[-Math.PI / 2, 0, 0]}>
+        {primitiveGeoms.map(g => (
+          <DynamicGeom
+            key={g.name}
+            nodeId={g.nodeId}
+            name={g.name}
+            type={g.type}
+            color={g.rgba || [0.8,0.8,0.8,1]}
+            mujoco={mujoco}
+            model={model}
+            data={data}
+            selectedNodeId={selectedNodeId}
+            setSelectedNodeId={setSelectedNodeId}
+          />
+        ))}
+        <PulleyRopesRenderer model={model} data={data} mujoco={mujoco} sceneGraph={sceneGraph} />
+        <MouseDragForceRenderer model={model} data={data} mujoco={mujoco} />
+      </group>
+      {/* Mesh geoms: vertices already in Three.js Y-up space, no rotation needed */}
+      {meshGeoms.map(g => (
+        <DynamicGeom
+          key={g.name}
           nodeId={g.nodeId}
-          name={g.name} 
-          type={g.type} 
-          color={g.rgba || [0.8,0.8,0.8,1]} 
-          mujoco={mujoco} 
-          model={model} 
-          data={data} 
+          name={g.name}
+          type={g.type}
+          color={g.rgba || [0.8,0.8,0.8,1]}
+          mujoco={mujoco}
+          model={model}
+          data={data}
           selectedNodeId={selectedNodeId}
           setSelectedNodeId={setSelectedNodeId}
+          vertices={g.vertices}
+          faces={g.faces}
         />
       ))}
-      <PulleyRopesRenderer model={model} data={data} mujoco={mujoco} sceneGraph={sceneGraph} />
-      <MouseDragForceRenderer model={model} data={data} mujoco={mujoco} />
-    </group>
+    </>
   );
 };
 
@@ -1410,6 +1462,8 @@ function App() {
               <option value="newtons_cradle">Newton's Cradle</option>
               <option value="suspension_bridge">Suspension Bridge</option>
               <option value="paper_plane">✈ Paper Plane</option>
+              <option value="monkey_head">🐵 Monkey Head</option>
+              <option value="golden_gate">🌉 Golden Gate Bridge</option>
             </select>
           </div>
 

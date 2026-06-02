@@ -95,4 +95,40 @@ Welcome to the **Physics Expt** development reference guide. This document centr
   $$\text{Max}(|x|)_{\text{Phase 3}} < \text{Max}(|x|)_{\text{Phase 2}} < \text{Max}(|x|)_{\text{Phase 1}}$$
   $$\text{Max}(|\theta|)_{\text{Phase 3}} < \text{Max}(|\theta|)_{\text{Phase 2}} < \text{Max}(|\theta|)_{\text{Phase 1}}$$
 
+---
+
+## 🧊 Mesh Geom Coordinate System
+
+Mesh geoms (`type: 'mesh'`) use inline `vertices` and `faces` arrays and are rendered differently from primitive geoms. Hard-won discoveries:
+
+### Rendering path
+- Primitive geoms (`box`, `sphere`, `capsule`, etc.) live inside a `<group rotation={[-π/2, 0, 0]}>` that converts MuJoCo Z-up → Three.js Y-up. Their positions come from `geom_xpos` (updated every frame via `useFrame`).
+- Mesh geoms are rendered **outside** that rotated group, with vertices interpreted as raw Three.js world-space coordinates.
+- `useFrame` must **not** update mesh geom positions — their vertices already encode world position. The fix: `if (type === 'mesh') return;` at the top of the `useFrame` callback.
+
+### Axis convention for mesh vertices
+Vertices are in standard **Three.js Y-up world space**:
+- **X** = left/right
+- **Y** = up/down (height)
+- **Z** = front/back (depth)
+
+This is the same space the `<Grid>` lives in (at `position={[0, -0.01, 0]}`).
+
+### box() helper — confirmed working signature
+```ts
+// box(cx, cy, cz, hx, hy, hz)
+// cx/hx = left-right,  cy/hy = up/height,  cz/hz = front-back
+box(0, 0.3, 0,  4.8, 0.06, 0.3)  // flat road: wide in X, thin in Y, shallow in Z
+box(-2, 1.5, 0,  0.08, 1.5, 0.08) // vertical post: tall in Y, narrow in X and Z
+```
+
+### Common mistakes
+- Do **not** apply any coordinate conversion to mesh vertices — they go straight into Three.js `BufferGeometry`.
+- Do **not** put mesh geoms inside the `rotation={[-π/2,0,0]}` group — they're already in the right space.
+- `useFrame` **must** bail early for mesh type (`if (type === 'mesh') return`) — otherwise it overwrites the group position every frame with `geom_xpos` (MuJoCo Z-up coords), scrambling the mesh.
+- Mesh groups must have no `ref`, no `initialPos`, no `quaternion` applied — just `<group><mesh geometry={...} /></group>`.
+- `pos`, `quat`, `euler` fields on a mesh `SceneGeom` are ignored for rendering (they only affect MuJoCo physics). Bake all positions into the vertex data.
+
+### Ellipsoid rendering
+Ellipsoids are rendered as a unit sphere scaled by `[rx, ry, rz]` (the three semi-axes from `geom_size`). This means normals are distorted under non-uniform scale — lighting looks slightly off on very squashed shapes, but it's visually acceptable and physically correct (MuJoCo uses the real ellipsoid for collision).
 

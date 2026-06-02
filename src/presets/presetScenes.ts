@@ -789,6 +789,95 @@ export const paperPlanePreset: SceneGraph = {
   ]
 };
 
+// Monkey head: compound primitives approximating the classic Blender Suzanne.
+export const monkeyHeadPreset: SceneGraph = {
+  nodes: [{
+    id: 'monkey', name: 'monkey', type: 'body', pos: [0, 0, 3.0],
+    joints: [{ name: 'monkey_free', type: 'free' }],
+    geoms: [
+      { name: 'skull',        type: 'ellipsoid', size: [0.52, 0.55, 0.48], rgba: [0.88, 0.66, 0.30, 1] },
+      { name: 'cheek_l',      type: 'ellipsoid', size: [0.19, 0.16, 0.15], pos: [-0.40, 0.08, -0.06], rgba: [0.80, 0.58, 0.26, 1] },
+      { name: 'cheek_r',      type: 'ellipsoid', size: [0.19, 0.16, 0.15], pos: [ 0.40, 0.08, -0.06], rgba: [0.80, 0.58, 0.26, 1] },
+      { name: 'snout',        type: 'ellipsoid', size: [0.22, 0.18, 0.13], pos: [0, 0.62, -0.12],     rgba: [0.86, 0.68, 0.34, 1] },
+      { name: 'nostril_l',    type: 'sphere',    size: [0.055],            pos: [-0.09, 0.78, -0.12], rgba: [0.15, 0.08, 0.03, 1] },
+      { name: 'nostril_r',    type: 'sphere',    size: [0.055],            pos: [ 0.09, 0.78, -0.12], rgba: [0.15, 0.08, 0.03, 1] },
+      { name: 'brow',         type: 'box',       size: [0.32, 0.06, 0.05], pos: [0, 0.48, 0.28],      rgba: [0.40, 0.24, 0.08, 1] },
+      { name: 'eye_socket_l', type: 'sphere',    size: [0.12],             pos: [-0.22, 0.50, 0.08],  rgba: [0.15, 0.08, 0.03, 1] },
+      { name: 'eye_socket_r', type: 'sphere',    size: [0.12],             pos: [ 0.22, 0.50, 0.08],  rgba: [0.15, 0.08, 0.03, 1] },
+      { name: 'eye_l',        type: 'sphere',    size: [0.10],             pos: [-0.22, 0.60, 0.08],  rgba: [0.95, 0.95, 0.93, 1] },
+      { name: 'eye_r',        type: 'sphere',    size: [0.10],             pos: [ 0.22, 0.60, 0.08],  rgba: [0.95, 0.95, 0.93, 1] },
+      { name: 'pupil_l',      type: 'sphere',    size: [0.050],            pos: [-0.22, 0.69, 0.08],  rgba: [0.04, 0.04, 0.04, 1] },
+      { name: 'pupil_r',      type: 'sphere',    size: [0.050],            pos: [ 0.22, 0.69, 0.08],  rgba: [0.04, 0.04, 0.04, 1] },
+      { name: 'jaw',          type: 'ellipsoid', size: [0.30, 0.24, 0.10], pos: [0, 0.20, -0.42],     rgba: [0.80, 0.56, 0.24, 1] },
+      { name: 'ear_l',        type: 'ellipsoid', size: [0.10, 0.08, 0.18], pos: [-0.60, -0.10, 0.16], rgba: [0.84, 0.62, 0.28, 1] },
+      { name: 'ear_r',        type: 'ellipsoid', size: [0.10, 0.08, 0.18], pos: [ 0.60, -0.10, 0.16], rgba: [0.84, 0.62, 0.28, 1] },
+      { name: 'ear_inner_l',  type: 'ellipsoid', size: [0.055,0.045,0.11], pos: [-0.61, 0.00, 0.16],  rgba: [0.48, 0.26, 0.10, 1] },
+      { name: 'ear_inner_r',  type: 'ellipsoid', size: [0.055,0.045,0.11], pos: [ 0.61, 0.00, 0.16],  rgba: [0.48, 0.26, 0.10, 1] },
+      { name: 'chin',         type: 'sphere',    size: [0.09],             pos: [0, 0.52, -0.50],     rgba: [0.80, 0.56, 0.24, 1] },
+    ],
+    children: []
+  }]
+};
+
+// Golden Gate bridge — all primitives so the structure physically simulates.
+// Towers fixed to world. Deck + cables on a stiff ball joint so they sway in wind.
+export const goldenGateBridgePreset: SceneGraph = (() => {
+  const ORANGE = [0.80, 0.25, 0.08, 1] as number[];
+  const GREY   = [0.55, 0.55, 0.55, 1] as number[];
+  const CABLE  = [0.60, 0.18, 0.05, 1] as number[];
+  const HANGER = [0.65, 0.65, 0.65, 1] as number[];
+
+  const makeTowerGeoms = (x: number, prefix: string): SceneGeom[] => [
+    { name: `${prefix}_leg_f`, type: 'box',     size: [0.08, 0.08, 1.5], pos: [x, -0.3, 1.5], rgba: ORANGE },
+    { name: `${prefix}_leg_b`, type: 'box',     size: [0.08, 0.08, 1.5], pos: [x,  0.3, 1.5], rgba: ORANGE },
+    { name: `${prefix}_xb_lo`, type: 'box',     size: [0.08, 0.38, 0.06], pos: [x, 0, 0.8],   rgba: ORANGE },
+    { name: `${prefix}_xb_hi`, type: 'box',     size: [0.08, 0.38, 0.06], pos: [x, 0, 2.5],   rgba: ORANGE },
+  ];
+
+  const makeCableGeoms = (y: number, prefix: string): SceneGeom[] => {
+    const geoms: SceneGeom[] = [];
+    const N = 16;
+    for (let i = 0; i < N; i++) {
+      const t0 = i / N, t1 = (i + 1) / N;
+      const x0 = -4.8 + t0 * 9.6, x1 = -4.8 + t1 * 9.6;
+      const z0 = 3.0 - 6 * t0 * (1 - t0), z1 = 3.0 - 6 * t1 * (1 - t1);
+      geoms.push({ name: `${prefix}_${i}`, type: 'capsule', size: [0.04], fromto: [x0, y, z0, x1, y, z1], rgba: CABLE });
+    }
+    return geoms;
+  };
+
+  const makeHangerGeoms = (y: number, prefix: string): SceneGeom[] => {
+    const geoms: SceneGeom[] = [];
+    for (let i = 1; i < 12; i++) {
+      const t = i / 12;
+      const x = -4.8 + t * 9.6;
+      const zTop = 3.0 - 6 * t * (1 - t);
+      geoms.push({ name: `${prefix}_${i}`, type: 'capsule', size: [0.02], fromto: [x, y, zTop, x, y, 0.36], rgba: HANGER });
+    }
+    return geoms;
+  };
+
+  return {
+    nodes: [
+      {
+        id: 'gg_towers', name: 'gg_towers', type: 'body' as const, pos: [0, 0, 0], joints: [],
+        geoms: [...makeTowerGeoms(-4.8, 'tl'), ...makeTowerGeoms(4.8, 'tr')],
+        children: [],
+      },
+      {
+        id: 'gg_deck', name: 'gg_deck', type: 'body' as const, pos: [0, 0, 0],
+        joints: [{ name: 'gg_sway', type: 'ball', pos: [0, 0, 0], damping: 300, stiffness: 1200 }],
+        geoms: [
+          { name: 'gg_deck_box', type: 'box', size: [4.8, 0.3, 0.06], pos: [0, 0, 0.3], rgba: GREY, mass: 600 },
+          ...makeCableGeoms(-0.3, 'cf'), ...makeCableGeoms(0.3, 'cb'),
+          ...makeHangerGeoms(-0.3, 'hf'), ...makeHangerGeoms(0.3, 'hb'),
+        ],
+        children: [],
+      },
+    ]
+  };
+})();
+
 export const PRESETS = {
   pendulum: {
     name: 'Double Pendulum',
@@ -833,5 +922,13 @@ export const PRESETS = {
   paper_plane: {
     name: 'Paper Plane',
     scene: paperPlanePreset
+  },
+  monkey_head: {
+    name: 'Monkey Head',
+    scene: monkeyHeadPreset
+  },
+  golden_gate: {
+    name: 'Golden Gate Bridge',
+    scene: goldenGateBridgePreset
   }
 };
