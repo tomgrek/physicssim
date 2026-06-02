@@ -19,8 +19,14 @@ export interface SceneGeom {
   solimp?: number[];
   // For type='mesh': flat array of vertex positions (x0,y0,z0, x1,y1,z1, ...) and
   // flat array of triangle face indices (i0,j0,k0, i1,j1,k1, ...).
+  // vertices are in Three.js Y-up space; the mjcf builder swaps Y↔Z for MuJoCo.
   vertices?: number[];
   faces?: number[];
+  // When true, the mesh participates in simulation and its transform is tracked from MuJoCo.
+  // The renderer uses renderVertices (Z-up, centroid at origin) inside the rotated group.
+  dynamic?: boolean;
+  // Centroid-recentered vertices in MuJoCo Z-up space for dynamic mesh rendering.
+  renderVertices?: number[];
 }
 
 export interface SceneJoint {

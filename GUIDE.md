@@ -97,52 +97,125 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 
 ---
 
-## 🧊 Mesh Geom Coordinate System
+## 🧊 Mesh Geoms — Complete Reference
 
-Mesh geoms (`type: 'mesh'`) use inline `vertices` and `faces` arrays and are rendered differently from primitive geoms. Hard-won discoveries:
+Mesh geoms (`type: 'mesh'`) come in two modes: **static** (visual only) and **dynamic** (full physics + collision). Both are hard-won — read this carefully before touching mesh code.
 
-### Rendering path
-- Primitive geoms (`box`, `sphere`, `capsule`, etc.) live inside a `<group rotation={[-π/2, 0, 0]}>` that converts MuJoCo Z-up → Three.js Y-up. Their positions come from `geom_xpos` (updated every frame via `useFrame`).
-- Mesh geoms are rendered **outside** that rotated group, with vertices interpreted as raw Three.js world-space coordinates.
-- `useFrame` must **not** update mesh geom positions — their vertices already encode world position. The fix: `if (type === 'mesh') return;` at the top of the `useFrame` callback.
+---
 
-### Axis convention for mesh vertices
-Vertices are in standard **Three.js Y-up world space**:
-- **X** = left/right
-- **Y** = up/down (height)
-- **Z** = front/back (depth)
+### Coordinate systems
 
-This is the same space the `<Grid>` lives in (at `position={[0, -0.01, 0]}`).
+- **Three.js** is Y-up: X=right, Y=up, Z=toward camera. Ground plane is Y=0.
+- **MuJoCo** is Z-up: X=right, Y=forward (into screen), Z=up. Ground plane is Z=0.
+- The `mjcf.ts` builder **automatically swaps Y↔Z** when emitting mesh vertices into the `<mesh>` asset XML. So you always author `vertices` in Three.js Y-up space.
+- Primitive geoms live inside a `<group rotation={[-π/2, 0, 0]}>` in `App.tsx` that converts MuJoCo Z-up world positions into Three.js Y-up for rendering.
 
-### box() helper — confirmed working signature
+---
+
+### Static mesh geoms (default)
+
+`dynamic` field absent or `false`. Vertices baked in Three.js Y-up world space. The mesh renders at a fixed position — never moves, never collides. Rendered **outside** the rotated group; no `ref`, no `useFrame` tracking.
+
+Good for: scenery, decorative structures, visual shells around primitive collision proxies.
+
 ```ts
-// box(cx, cy, cz, hx, hy, hz)
-// cx/hx = left-right,  cy/hy = up/height,  cz/hz = front-back
-box(0, 0.3, 0,  4.8, 0.06, 0.3)  // flat road: wide in X, thin in Y, shallow in Z
-box(-2, 1.5, 0,  0.08, 1.5, 0.08) // vertical post: tall in Y, narrow in X and Z
+{ name: 'deck', type: 'mesh', size: [1], rgba: [...], vertices: [...], faces: [...] }
 ```
 
-### Common mistakes
-- Do **not** apply any coordinate conversion to mesh vertices — they go straight into Three.js `BufferGeometry`.
-- Do **not** put mesh geoms inside the `rotation={[-π/2,0,0]}` group — they're already in the right space.
-- `useFrame` **must** bail early for mesh type (`if (type === 'mesh') return`) — otherwise it overwrites the group position every frame with `geom_xpos` (MuJoCo Z-up coords), scrambling the mesh.
-- Mesh groups must have no `ref`, no `initialPos`, no `quaternion` applied — just `<group><mesh geometry={...} /></group>`.
-- `pos`, `quat`, `euler` fields on a mesh `SceneGeom` are ignored for rendering (they only affect MuJoCo physics). Bake all positions into the vertex data.
+The `box()` helper used in `goldenGateMeshPreset` (Three.js Y-up coords):
+```ts
+// box(cx, cy, cz, hx, hy, hz) — cy/hy = height
+box(0, 0.3, 0,  4.8, 0.06, 0.3)  // flat deck: wide in X, thin in Y
+box(cx, 1.5, 0, 0.08, 1.5, 0.08) // tall post: large hy
+```
 
-### Mesh geoms are VISUAL ONLY — not simulated
+---
 
-**Mesh geoms do not participate in physics simulation.** Their vertex data is used only by the Three.js renderer; it is never read back from MuJoCo at runtime. Consequences:
+### Dynamic mesh geoms (`dynamic: true`)
 
-- A mesh body **will not move** even if it has a free joint — the rendered vertices are frozen at their authored positions.
-- Mesh geoms **do not collide** with anything during simulation (MuJoCo does register the mesh asset for collision, but the visual representation never updates to reflect body motion).
-- Use meshes only for **static scenery** that will never move: backgrounds, decorative structures, architectural detail.
-- For anything that needs to move, bounce, sway, or collide visually — use primitive geoms (`box`, `sphere`, `capsule`, `cylinder`, `ellipsoid`).
+Full physics simulation and collision. MuJoCo takes the **convex hull** of the mesh — concave shapes won't collide correctly as a single mesh.
 
-**Useful applications for mesh:**
-- Static environment dressing (buildings, terrain features, decorative bridges)
-- High-detail visual shells around a simpler primitive collision proxy
-- Reference geometry or scale indicators that don't interact with the scene
+Requires two extra fields:
+```ts
+{
+  type: 'mesh',
+  vertices: [...],        // Three.js Y-up space — fed to mjcf builder, swapped Y↔Z for MuJoCo
+  faces: [...],
+  dynamic: true,
+  renderVertices: [...],  // MuJoCo Z-up space, volume-centroid subtracted — used by Three.js renderer
+}
+```
+
+**Rendering path for dynamic meshes:**
+- Rendered **inside** the `rotation={[-π/2, 0, 0]}` group alongside primitives
+- Position/rotation tracked every frame from `data.xpos[bodyId]` / `data.xmat[bodyId]` — **body** transform, not geom transform
+- `renderVertices` are in body-local Z-up space (centroid at origin), so using body xpos gives correct world placement
+
+**Why body xpos, not geom_xpos:** `geom_xpos = body_pos + volume_centroid_offset`. If you position the mesh group at `geom_xpos` but the vertices are centroid-subtracted, the visual is shifted by the centroid twice. Using `body xpos` cancels this correctly.
+
+---
+
+### Computing renderVertices — the correct workflow
+
+1. **Author `vertices` in Three.js Y-up** as normal.
+
+2. **Measure the volume centroid MuJoCo actually computes.** Do NOT use vertex average — MuJoCo uses volume-weighted centroid (tetrahedra decomposition), which differs significantly for asymmetric shapes. Measure it empirically:
+
+```js
+// scratch/test_mesh_collision.mjs pattern:
+const scene = { nodes: [{ id:'s', name:'s', type:'body', pos:[0,0,0],
+  joints:[{name:'f',type:'free'}],
+  geoms:[{name:'g', type:'mesh', size:[1], rgba:[1,0,0,1], mass:1, vertices: yourYupVerts, faces: yourFaces}],
+  children:[] }] };
+const xml = compileToMJCF(scene, -9.81, 1.0, 0, 0, 0);
+const model = mujoco.MjModel.from_xml_string(xml);
+const data = new mujoco.MjData(model);
+mujoco.mj_forward(model, data);
+// geom[0]=floor, geom[1]=your mesh. body at [0,0,0] so geom_xpos = centroid in MuJoCo Z-up
+const centroid = { x: data.geom_xpos[3], y: data.geom_xpos[4], z: data.geom_xpos[5] };
+```
+
+3. **Compute renderVertices**: swap Y↔Z on each vertex, then subtract the measured centroid:
+```js
+function toRenderVerts(yuVerts, centroid) {
+  const out = [];
+  for (let i = 0; i < yuVerts.length; i += 3) {
+    // swap Y↔Z to get Z-up, then subtract volume centroid
+    out.push(yuVerts[i] - centroid.x, yuVerts[i+2] - centroid.y, yuVerts[i+1] - centroid.z);
+  }
+  return out;
+}
+```
+
+4. **Set body pos**: `body_pos.z = desired_base_Z`. The centroid offset cancels itself — `geom_xpos.z = body_pos.z + centroid.z`, and the mesh base sits at `geom_xpos.z - centroid.z = body_pos.z`. No correction needed.
+
+**Reference values** (from `meshCollisionPreset`, measured via mj_forward):
+- Pyramid (base 0.6×0.6, height 0.5, Y-up): centroid = `(0, 0, 0.125)` in MuJoCo Z-up
+- Ramp (triangular prism 1.2×1.2×0.5, Y-up): centroid = `(0, 0.2, 0.167)` in MuJoCo Z-up
+
+See `scratch/test_mesh_collision.mjs` for the full measurement + collision verification script.
+
+---
+
+### Adding a new preset — three places to update
+
+1. **`src/presets/presetScenes.ts`**: add the `export const myPreset` and add it to the `PRESETS` map at the bottom.
+2. **`src/App.tsx`**: add `<option value="my_preset">My Preset</option>` to the hardcoded `<select>` dropdown (~line 1495). This does NOT auto-populate from `PRESETS`.
+3. **`src/store/useStore.ts`**: add `'my_preset'` to the `loadPreset` union type (~line 100).
+
+---
+
+### Keeping useMCPBridge.ts in sync
+
+`useMCPBridge.ts` is the MCP tool schema seen by external agents. When capabilities change, update:
+- `LIST_PRESETS`: add new preset keys
+- `geomFields`: add/update field descriptions
+- `tips`: add or correct guidance
+
+Stale bridge docs cause agents to generate broken scenes.
+
+---
 
 ### Ellipsoid rendering
-Ellipsoids are rendered as a unit sphere scaled by `[rx, ry, rz]` (the three semi-axes from `geom_size`). This means normals are distorted under non-uniform scale — lighting looks slightly off on very squashed shapes, but it's visually acceptable and physically correct (MuJoCo uses the real ellipsoid for collision).
+Ellipsoids are rendered as a unit sphere scaled by `[rx, ry, rz]` (the three semi-axes from `geom_size`). Normals are distorted under non-uniform scale — lighting looks slightly off on very squashed shapes, but physically correct (MuJoCo uses the real ellipsoid for collision).
 

@@ -610,7 +610,7 @@ const WedgeGeometry = ({ width = 2.0, depth = 1.0, height = 0.5 }: { width: numb
 
 
 // Dynamic Geom Renderer
-const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedNodeId, setSelectedNodeId, vertices, faces }: any) => {
+const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedNodeId, setSelectedNodeId, vertices, faces, dynamic: isDynamic }: any) => {
   const meshRef = useRef<THREE.Group>(null);
   const isPlaying = useStore(state => state.isPlaying);
   
@@ -701,17 +701,40 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
     }
   }), [isPlaying, nodeId, setSelectedNodeId]);
 
+  // For dynamic meshes, use body xpos/xmat so renderVertices (centroid-local) align correctly.
+  const bodyId = useMemo(() => {
+    if (!isDynamic || !model || !mujoco) return -1;
+    return mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, nodeId);
+  }, [isDynamic, model, mujoco, nodeId]);
+
   // Compute initial position and rotation from the model/data
   const [initialPos, initialQuat] = useMemo(() => {
-    if (geomId === -1 || !model || !data) return [[0, 0, 0] as [number, number, number], [0, 0, 0, 1] as [number, number, number, number]];
+    if (!model || !data) return [[0, 0, 0] as [number, number, number], [0, 0, 0, 1] as [number, number, number, number]];
     try {
+      // Dynamic meshes: use body xpos/xmat (renderVertices are in body-local space)
+      if (isDynamic && bodyId !== -1) {
+        const px = data.xpos[bodyId * 3];
+        const py = data.xpos[bodyId * 3 + 1];
+        const pz = data.xpos[bodyId * 3 + 2];
+        const m = data.xmat;
+        const offset = bodyId * 9;
+        const mat = new THREE.Matrix4().set(
+          m[offset], m[offset+1], m[offset+2], 0,
+          m[offset+3], m[offset+4], m[offset+5], 0,
+          m[offset+6], m[offset+7], m[offset+8], 0,
+          0, 0, 0, 1
+        );
+        const q = new THREE.Quaternion().setFromRotationMatrix(mat);
+        return [[px, py, pz] as [number, number, number], [q.x, q.y, q.z, q.w] as [number, number, number, number]];
+      }
+      if (geomId === -1) return [[0, 0, 0] as [number, number, number], [0, 0, 0, 1] as [number, number, number, number]];
       const ngeom = model.ngeom;
       if (geomId >= ngeom) return [[0, 0, 0] as [number, number, number], [0, 0, 0, 1] as [number, number, number, number]];
 
       const px = data.geom_xpos[geomId * 3];
       const py = data.geom_xpos[geomId * 3 + 1];
       const pz = data.geom_xpos[geomId * 3 + 2];
-      
+
       const m = data.geom_xmat;
       const offset = geomId * 9;
       const mat = new THREE.Matrix4().set(
@@ -725,7 +748,7 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
     } catch (e) {
       return [[0, 0, 0] as [number, number, number], [0, 0, 0, 1] as [number, number, number, number]];
     }
-  }, [geomId, model, data]);
+  }, [isDynamic, bodyId, geomId, model, data]);
 
   useFrame(() => {
     // Safety check: ensure closure model/data match current store active ones
@@ -734,17 +757,36 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
     if (model !== activeModel || data !== activeData) return;
 
     if ((window as any).DISABLE_USEFRAME) return;
-    if (type === 'mesh') return;
-    if (!meshRef.current || geomId === -1 || !model || !data) return;
-    
+    if (type === 'mesh' && !isDynamic) return;
+    if (!meshRef.current || !model || !data) return;
+
     try {
+      // Dynamic meshes: track body xpos/xmat (renderVertices are in body-local space)
+      if (isDynamic && bodyId !== -1) {
+        const px = data.xpos[bodyId * 3];
+        const py = data.xpos[bodyId * 3 + 1];
+        const pz = data.xpos[bodyId * 3 + 2];
+        const m = data.xmat;
+        const offset = bodyId * 9;
+        rotationMatrix.set(
+          m[offset], m[offset+1], m[offset+2], 0,
+          m[offset+3], m[offset+4], m[offset+5], 0,
+          m[offset+6], m[offset+7], m[offset+8], 0,
+          0, 0, 0, 1
+        );
+        meshRef.current.position.set(px, py, pz);
+        meshRef.current.quaternion.setFromRotationMatrix(rotationMatrix);
+        return;
+      }
+
+      if (geomId === -1) return;
       const ngeom = model.ngeom;
       if (geomId >= ngeom) return;
 
       const px = data.geom_xpos[geomId * 3];
       const py = data.geom_xpos[geomId * 3 + 1];
       const pz = data.geom_xpos[geomId * 3 + 2];
-      
+
       const m = data.geom_xmat;
       const offset = geomId * 9;
       rotationMatrix.set(
@@ -753,7 +795,7 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
         m[offset + 6], m[offset + 7], m[offset + 8], 0,
         0,             0,             0,             1
       );
-      
+
       meshRef.current.position.set(px, py, pz);
       meshRef.current.quaternion.setFromRotationMatrix(rotationMatrix);
     } catch (e) {
@@ -773,7 +815,17 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
 
   if (type === 'mesh') {
     if (!meshBufferGeometry) return null;
-    // Vertices are baked in Three.js world space — no position/rotation applied.
+    if (isDynamic) {
+      // Dynamic mesh: transform tracked from MuJoCo via geom_xpos/geom_xmat (Z-up coords, handled by parent group rotation).
+      return (
+        <group ref={meshRef} position={initialPos} quaternion={new THREE.Quaternion(...initialQuat)}>
+          <mesh castShadow receiveShadow geometry={meshBufferGeometry} {...dragHandlers}>
+            <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} side={THREE.DoubleSide} />
+          </mesh>
+        </group>
+      );
+    }
+    // Static mesh: vertices baked in Three.js world space — no position/rotation applied.
     return (
       <group>
         <mesh castShadow receiveShadow geometry={meshBufferGeometry} {...dragHandlers}>
@@ -1144,11 +1196,12 @@ const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSele
   if (!model || !data || !mujoco) return null;
   
   const primitiveGeoms = geoms.filter(g => g.type !== 'mesh');
-  const meshGeoms = geoms.filter(g => g.type === 'mesh');
+  const staticMeshGeoms = geoms.filter(g => g.type === 'mesh' && !g.dynamic);
+  const dynamicMeshGeoms = geoms.filter(g => g.type === 'mesh' && g.dynamic);
 
   return (
     <>
-      {/* Primitive geoms live in a Z-up→Y-up rotated group */}
+      {/* Primitive geoms and dynamic meshes live in a Z-up→Y-up rotated group */}
       <group rotation={[-Math.PI / 2, 0, 0]}>
         {primitiveGeoms.map(g => (
           <DynamicGeom
@@ -1164,11 +1217,28 @@ const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSele
             setSelectedNodeId={setSelectedNodeId}
           />
         ))}
+        {dynamicMeshGeoms.map(g => (
+          <DynamicGeom
+            key={g.name}
+            nodeId={g.nodeId}
+            name={g.name}
+            type={g.type}
+            color={g.rgba || [0.8,0.8,0.8,1]}
+            mujoco={mujoco}
+            model={model}
+            data={data}
+            selectedNodeId={selectedNodeId}
+            setSelectedNodeId={setSelectedNodeId}
+            vertices={g.renderVertices}
+            faces={g.faces}
+            dynamic={true}
+          />
+        ))}
         <PulleyRopesRenderer model={model} data={data} mujoco={mujoco} sceneGraph={sceneGraph} />
         <MouseDragForceRenderer model={model} data={data} mujoco={mujoco} />
       </group>
-      {/* Mesh geoms: vertices already in Three.js Y-up space, no rotation needed */}
-      {meshGeoms.map(g => (
+      {/* Static mesh geoms: vertices already in Three.js Y-up space, no rotation needed */}
+      {staticMeshGeoms.map(g => (
         <DynamicGeom
           key={g.name}
           nodeId={g.nodeId}
@@ -1465,6 +1535,7 @@ function App() {
               <option value="monkey_head">🐵 Monkey Head</option>
               <option value="golden_gate">🌉 Golden Gate Bridge</option>
               <option value="golden_gate_mesh">🌉 Golden Gate (Mesh)</option>
+              <option value="mesh_collision">🔺 Mesh Collision Demo</option>
             </select>
           </div>
 

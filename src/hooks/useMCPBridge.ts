@@ -181,7 +181,8 @@ export function useMCPBridge() {
         case 'LIST_PRESETS':
           return ['pendulum', 'cubes', 'gears', 'machine', 'rack_pinion',
                   'inclined_plane', 'pulley_system', 'cartpole', 'newtons_cradle',
-                  'suspension_bridge', 'paper_plane', 'monkey_head'];
+                  'suspension_bridge', 'paper_plane', 'monkey_head',
+                  'golden_gate', 'golden_gate_mesh', 'mesh_collision'];
 
         case 'UPDATE_SCENE': {
           if (!msg.sceneGraph) return { ok: false, error: 'Missing sceneGraph' };
@@ -205,7 +206,7 @@ export function useMCPBridge() {
               cylinder:  'radius and half-height [r, hh]',
               ellipsoid: 'semi-axes [rx, ry, rz]',
               plane:     'ignored by MuJoCo (infinite plane) — set to [0, 0, 1] or any non-zero',
-              mesh:      'not used — shape defined by vertices and faces fields instead. IMPORTANT: (1) vertices are in Three.js world space (X=right, Y=up, Z=toward camera), NOT MuJoCo Z-up space. (2) MESH GEOMS ARE VISUAL ONLY — they do not simulate, move, or collide. Use only for static decorative geometry.',
+              mesh:      'not used — shape defined by vertices and faces fields instead. IMPORTANT: (1) vertices are in Three.js world space (X=right, Y=up, Z=toward camera), NOT MuJoCo Z-up space. (2) Static mesh geoms (default) are visual-only. Dynamic mesh geoms (dynamic:true + renderVertices) fully collide and simulate — see tips for details.',
             },
             jointTypes: ['hinge', 'slide', 'ball', 'free'],
             geomFields: {
@@ -224,8 +225,10 @@ export function useMCPBridge() {
               condim:      'number — contact dimensionality (1, 3, 4, or 6)',
               solref:      'number[2] — constraint solver reference [timeconst, dampratio]',
               solimp:      'number[5] — constraint solver impedance params',
-              vertices:    'number[] — flat array of vertex positions for mesh type: [x0,y0,z0, x1,y1,z1, ...]',
+              vertices:    'number[] — flat array of vertex positions for mesh type: [x0,y0,z0, x1,y1,z1, ...] in Three.js Y-up space',
               faces:       'number[] — flat array of triangle indices for mesh type: [i0,j0,k0, i1,j1,k1, ...]',
+              dynamic:     'boolean — if true, mesh participates in simulation and collision; requires renderVertices',
+              renderVertices: 'number[] — for dynamic meshes only: verts in MuJoCo Z-up space with volume centroid subtracted. Compute by: (1) swap Y↔Z on each vertex, (2) subtract the volume centroid measured via mj_forward (NOT vertex average — MuJoCo uses volume-weighted centroid). See GUIDE.md for full workflow and scratch/test_mesh_collision.mjs for measurement script.',
             },
             nodeFields: {
               id:            'string — unique body identifier (used in coupling/weld/connect refs)',
@@ -256,9 +259,12 @@ export function useMCPBridge() {
               'Mesh vertical post example: vertices centred at (cx, halfHeight, cz) with hy=halfHeight (tall in Y)',
               'Mesh flat plank example: box(cx, 0.3, cz, halfSpan, 0.06, halfWidth) — small hy=thickness, large hx=span',
               'Mesh tetrahedron example: vertices=[0,0,0, 1,0,0, 0.5,1,0, 0.5,0.5,1], faces=[0,1,2, 0,1,3, 1,2,3, 0,2,3]',
-              'Do NOT apply any coordinate conversion to mesh vertices — they go directly into Three.js BufferGeometry',
-              'IMPORTANT: mesh geoms are VISUAL ONLY. They do not move, simulate, or collide. For physics use primitives (box/sphere/capsule/cylinder/ellipsoid). Meshes are only useful for static decorative geometry.',
-              'Good mesh use cases: static scenery, decorative structures, environment dressing, visual shells around primitive collision proxies',
+              'Static mesh (default, no dynamic field): visual-only. Vertices baked in Three.js Y-up world space — never moves, never collides. Good for scenery, decorative structures, environment dressing. Do NOT apply coordinate conversion to vertices — they go directly into Three.js BufferGeometry.',
+              'Dynamic mesh (dynamic:true): fully simulates and collides. MuJoCo takes convex hull — concave shapes will not collide correctly as a single mesh. Requires renderVertices field. See GUIDE.md for complete workflow.',
+              'Dynamic mesh body pos: set body_pos.z = desired_base_Z (e.g. 0 for ground level, 1.5 to start 1.5m up). The volume centroid offset cancels itself — no correction needed.',
+              'Dynamic mesh renderVertices: swap Y↔Z on each vertex, then subtract the volume centroid measured via mj_forward (NOT vertex average). See scratch/test_mesh_collision.mjs for measurement pattern.',
+              'Dynamic mesh rendering uses body xpos/xmat (not geom_xpos) — renderVertices are in body-local space so body transform gives correct world placement.',
+              'Working example of dynamic mesh collision: meshCollisionPreset (pyramid + ramp, ncon=4 confirmed in simulation).',
             ],
           };
 

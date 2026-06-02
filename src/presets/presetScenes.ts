@@ -965,6 +965,82 @@ export const goldenGateMeshPreset: SceneGraph = (() => {
   };
 })();
 
+// Mesh collision demo: pyramid mesh falling onto a ramp mesh, with full collision.
+// renderVertices are in MuJoCo Z-up space, offset by the volume centroid MuJoCo computes.
+// Centroid values determined empirically via mj_forward with body at origin.
+// Ramp centroid (Z-up): (0, 0.2, 0.1667). Pyramid centroid (Z-up): (0, 0, 0.125).
+export const meshCollisionPreset: SceneGraph = (() => {
+  // Y-up verts (Three.js) → fed to mjcf builder which swaps Y↔Z for MuJoCo
+  const rampYup = [
+    -0.6, 0,   -0.6,
+     0.6, 0,   -0.6,
+    -0.6, 0.5,  0.6,
+     0.6, 0.5,  0.6,
+    -0.6, 0,    0.6,
+     0.6, 0,    0.6,
+  ];
+  const rampFaces = [0,1,3, 0,3,2, 0,2,4, 1,3,5, 2,3,5, 2,5,4, 0,5,1, 0,4,5];
+
+  const pyramidYup = [
+    -0.3, 0,  0.3,
+     0.3, 0,  0.3,
+     0.3, 0, -0.3,
+    -0.3, 0, -0.3,
+     0.0, 0.5, 0.0,
+  ];
+  const pyramidFaces = [0,1,4, 1,2,4, 2,3,4, 3,0,4, 0,2,1, 0,3,2];
+
+  // renderVertices: Z-up, volume-centroid subtracted (values from mj_forward measurement)
+  // Ramp centroid = (0, 0.2, 0.1667) in Z-up
+  const rampRV = [
+    -0.6, -0.8,   -0.1667,
+     0.6, -0.8,   -0.1667,
+    -0.6,  0.4,    0.3333,
+     0.6,  0.4,    0.3333,
+    -0.6,  0.4,   -0.1667,
+     0.6,  0.4,   -0.1667,
+  ];
+  // Pyramid centroid = (0, 0, 0.125) in Z-up
+  const pyramidRV = [
+    -0.3,  0.3, -0.125,
+     0.3,  0.3, -0.125,
+     0.3, -0.3, -0.125,
+    -0.3, -0.3, -0.125,
+     0.0,  0.0,  0.375,
+  ];
+
+  return {
+    nodes: [
+      {
+        id: 'ramp', name: 'ramp', type: 'body',
+        pos: [0, 0, 0],  // body_pos.z = desired_base_Z; centroid offset cancels itself
+        joints: [],
+        geoms: [{
+          name: 'ramp_mesh', type: 'mesh', size: [1],
+          rgba: [0.5, 0.6, 0.7, 1], mass: 100, condim: 3,
+          friction: [0.4, 0.005, 0.0005],
+          vertices: rampYup, faces: rampFaces,
+          dynamic: true, renderVertices: rampRV,
+        }],
+        children: [],
+      },
+      {
+        id: 'pyramid', name: 'pyramid', type: 'body',
+        pos: [-0.2, 0, 1.5],  // body_pos.z = desired_base_Z
+        joints: [{ name: 'pyramid_free', type: 'free' }],
+        geoms: [{
+          name: 'pyramid_mesh', type: 'mesh', size: [1],
+          rgba: [0.85, 0.35, 0.15, 1], mass: 1, condim: 3,
+          friction: [0.5, 0.005, 0.0005],
+          vertices: pyramidYup, faces: pyramidFaces,
+          dynamic: true, renderVertices: pyramidRV,
+        }],
+        children: [],
+      },
+    ]
+  };
+})()
+
 export const PRESETS = {
   pendulum: {
     name: 'Double Pendulum',
@@ -1021,5 +1097,9 @@ export const PRESETS = {
   golden_gate_mesh: {
     name: 'Golden Gate (Mesh)',
     scene: goldenGateMeshPreset
+  },
+  mesh_collision: {
+    name: 'Mesh Collision Demo',
+    scene: meshCollisionPreset
   }
 };

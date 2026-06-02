@@ -84,9 +84,19 @@ export const compileToMJCF = (
   };
   collectMeshAssets(sceneCopy.nodes);
 
+  // Vertices stored in Three.js Y-up space (X=right, Y=up, Z=depth).
+  // MuJoCo is Z-up, so swap Y and Z for each vertex triplet before emitting.
+  const toMjcfVerts = (verts: number[]) => {
+    const out: number[] = [];
+    for (let i = 0; i < verts.length; i += 3) {
+      out.push(verts[i], verts[i + 2], verts[i + 1]);
+    }
+    return out;
+  };
+
   const assetXml = meshAssets.length > 0
     ? `\n  <asset>\n${meshAssets.map(g =>
-        `    <mesh name="${g.name}" vertex="${g.vertices!.join(' ')}" face="${g.faces!.join(' ')}" />`
+        `    <mesh name="${g.name}" vertex="${toMjcfVerts(g.vertices!).join(' ')}" face="${g.faces!.join(' ')}" />`
       ).join('\n')}\n  </asset>`
     : '';
 
