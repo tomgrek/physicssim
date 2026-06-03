@@ -3,9 +3,9 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useMCPBridge } from './hooks/useMCPBridge';
-import { useStore } from './store/useStore';
+import { useStore, scaleMeshGeoms } from './store/useStore';
 import type { SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu } from 'lucide-react';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2 } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
@@ -26,12 +26,13 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
     if (!nodes) return;
     for (const node of nodes) {
       if (node.isAerodynamic) {
-        // Generic aerodynamic logic for any primitive
+        // Generic aerodynamic logic for any geom type (box, mesh, ellipsoid, etc.)
         const geom = node.geoms?.[0];
-        if (geom && geom.type === 'box') {
-          // Extract dimensions from the box geom
-          const halfX = geom.size[0] || 0.1;
-          const halfY = geom.size[1] || 0.1;
+        if (geom) {
+          // Derive wing area and chord from geom size, or fall back to sensible defaults
+          const s = geom.size || [];
+          const halfX = s[0] || 0.3;
+          const halfY = s[1] || 0.2;
           const wingArea = (halfX * 2) * (halfY * 2);
           const chord = halfX * 2;
           
@@ -1764,9 +1765,9 @@ function App() {
               </div>
             </div>
 
-            <div 
-              draggable 
-              onDragStart={(e) => handleDragStart(e, 'pulley_rope')} 
+            <div
+              draggable
+              onDragStart={(e) => handleDragStart(e, 'pulley_rope')}
               onClick={() => handleAddComponentClick('pulley_rope')}
               className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
             >
@@ -1774,6 +1775,19 @@ function App() {
               <div className="flex flex-col">
                 <span className="text-xs font-semibold text-slate-700">Rope</span>
                 <span className="text-[10px] text-slate-400">Couples two bodies together</span>
+              </div>
+            </div>
+
+            <div
+              draggable
+              onDragStart={(e) => handleDragStart(e, 'mesh')}
+              onClick={() => handleAddComponentClick('mesh')}
+              className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
+            >
+              <Shapes className="w-4 h-4 text-violet-500 group-hover:scale-110 transition-transform" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-700">Mesh</span>
+                <span className="text-[10px] text-slate-400">Custom geometry (visual)</span>
               </div>
             </div>
           </div>
@@ -2406,11 +2420,61 @@ function App() {
               {(() => {
                 const geom = selectedNode.geoms?.find((g: any) => g.type === 'sphere' || g.type === 'box' || g.type === 'cylinder') || selectedNode.geoms?.[0];
                 if (!geom) return null;
+                const hasMeshGeom = selectedNode.geoms?.some((g: any) => g.type === 'mesh');
                 return (
                   <div key="geom-properties" className="flex flex-col gap-4">
                   {!selectedNode.id.includes('gear') && (
                     <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
                       <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2">📏 Resize Component</h3>
+
+                      {hasMeshGeom && (
+                        <div className="flex flex-col gap-2">
+                          <label className="text-xs font-medium text-slate-500 flex justify-between">
+                            Uniform Scale <span>scales all sub-geoms together</span>
+                          </label>
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="3.0"
+                            step="0.05"
+                            defaultValue="1.0"
+                            onMouseUp={(e) => {
+                              const scale = parseFloat((e.target as HTMLInputElement).value);
+                              (e.target as HTMLInputElement).value = '1.0';
+                              const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
+                              const find = (nodes: any[]): any => {
+                                for (const n of nodes) {
+                                  if (n.id === selectedNode.id) return n;
+                                  const c = find(n.children);
+                                  if (c) return c;
+                                }
+                                return null;
+                              };
+                              const node = find(newScene.nodes);
+                              if (!node) return;
+                              // Scale this node and all children recursively
+                              const scaleNode = (n: any) => {
+                                scaleMeshGeoms(n, scale);
+                                for (const g of n.geoms) {
+                                  if (g.type === 'mesh') continue;
+                                  if (g.size) g.size = g.size.map((s: number) => s * scale);
+                                  if (g.pos) g.pos = g.pos.map((p: number) => p * scale);
+                                  if (g.fromto) g.fromto = g.fromto.map((f: number) => f * scale);
+                                }
+                                // Scale child body pos offsets too
+                                for (const child of (n.children || [])) {
+                                  if (child.pos) child.pos = child.pos.map((p: number) => p * scale);
+                                  scaleNode(child);
+                                }
+                              };
+                              scaleNode(node);
+                              useStore.getState().updateScene(newScene);
+                            }}
+                            className="w-full accent-violet-500 cursor-pointer"
+                          />
+                          <p className="text-[10px] text-slate-400">Slider resets to 1× after release — each drag applies multiplicative scale to all sub-geoms.</p>
+                        </div>
+                      )}
                       
                       {geom.type === 'sphere' && (
                         <div className="flex flex-col gap-2">
@@ -2943,6 +3007,71 @@ function App() {
                 </div>
               );
             })()}
+
+              {/* Mesh Properties — shown when the body or any child has a mesh geom */}
+              {(() => {
+                const allGeoms: any[] = [];
+                const collectGeoms = (node: any) => { node.geoms?.forEach((g: any) => allGeoms.push({...g, _fromChildId: node.id !== selectedNode.id ? node.id : null})); node.children?.forEach(collectGeoms); };
+                collectGeoms(selectedNode);
+                if (!allGeoms.some((g: any) => g.type === 'mesh')) return null;
+                return (
+                <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                  <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
+                    <Shapes className="w-3.5 h-3.5 text-violet-500" /> Body Geoms ({allGeoms.length})
+                  </h3>
+                  <p className="text-[10px] text-slate-400 -mt-1 leading-snug">
+                    Static mesh geoms are <strong>visual only</strong>. Primitive geoms handle physics. Dynamic meshes simulate and collide.
+                  </p>
+                  {allGeoms.map((g: any) => (
+                    <div key={g.name} className="flex flex-col gap-1.5 p-2 bg-slate-50 rounded border border-slate-100">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                          {g.name}{g._fromChildId ? <span className="text-violet-400 font-normal"> (child)</span> : null}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {g.type === 'mesh'
+                            ? (g.vertices ? `mesh · ${g.vertices.length / 3} verts · ${g.faces ? g.faces.length / 3 : 0} tris${g.dynamic ? ' · dynamic' : ' · static'}` : 'mesh · no geometry')
+                            : `${g.type} · size [${(g.size || []).map((s: number) => s.toFixed(2)).join(', ')}]`}
+                        </span>
+                      </div>
+                      {g.type === 'mesh' && g.vertices && g.vertices.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const unique = new Map<string, number>();
+                            const newVerts: number[] = [];
+                            const remap: number[] = [];
+                            for (let i = 0; i < g.vertices.length; i += 3) {
+                              const key = `${g.vertices[i].toFixed(4)},${g.vertices[i+1].toFixed(4)},${g.vertices[i+2].toFixed(4)}`;
+                              if (!unique.has(key)) { unique.set(key, newVerts.length / 3); newVerts.push(g.vertices[i], g.vertices[i+1], g.vertices[i+2]); }
+                              remap[i/3] = unique.get(key)!;
+                            }
+                            const filteredFaces: number[] = [];
+                            for (let i = 0; i < g.faces.length; i += 3) {
+                              const a = remap[g.faces[i]], b = remap[g.faces[i+1]], c = remap[g.faces[i+2]];
+                              if (a !== b && b !== c && a !== c) filteredFaces.push(a, b, c);
+                            }
+                            const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
+                            const traverse = (nodes: any[]): boolean => {
+                              for (const node of nodes) {
+                                const idx = node.geoms?.findIndex((ng: any) => ng.name === g.name);
+                                if (idx >= 0) { node.geoms[idx] = { ...node.geoms[idx], vertices: newVerts, faces: filteredFaces }; return true; }
+                                if (traverse(node.children)) return true;
+                              }
+                              return false;
+                            };
+                            traverse(newScene.nodes);
+                            useStore.getState().updateScene(newScene);
+                          }}
+                          className="flex items-center justify-center gap-1.5 px-2 py-1.5 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded text-[10px] font-semibold text-violet-700 transition-colors cursor-pointer"
+                        >
+                          <Minimize2 className="w-3 h-3" /> Simplify (deduplicate vertices)
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                );
+              })()}
 
               {selectedNode.isPulleyWheel && (
                 <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">

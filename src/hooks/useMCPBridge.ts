@@ -15,7 +15,9 @@ export function useMCPBridge() {
 
     const connect = () => {
       if (dead) return;
-      ws = new WebSocket(`ws://${location.host}/mcp?role=browser`);
+      const params = new URLSearchParams(location.search);
+      const wsPort = params.get('mcpPort') || '3142';
+      ws = new WebSocket(`ws://localhost:${wsPort}`);
 
       ws.onopen = () =>
         ws!.send(JSON.stringify({ event: 'HELLO', app: 'physics', port: location.port }));

@@ -205,14 +205,16 @@ See `scratch/test_mesh_collision.mjs` for the full measurement + collision verif
 
 ---
 
-### Keeping useMCPBridge.ts in sync
+### Keeping MCP Documentation and Schemas in sync
 
-`useMCPBridge.ts` is the MCP tool schema seen by external agents. When capabilities change, update:
-- `LIST_PRESETS`: add new preset keys
-- `geomFields`: add/update field descriptions
-- `tips`: add or correct guidance
+The MCP server dynamically loads tool descriptions and simulator schemas from JSON documentation. When tool capabilities, presets, or schema fields change, you MUST update:
+1. **`mcp-docs.json`** at the root of the simulator repository (e.g. `physics/mcp-docs.json`).
+2. **`mcp-docs/physics.json`** inside the MCP server repository (`expt_mcp/mcp-docs/physics.json`). This is a fallback copy committed to the MCP repo so users can run it standalone without cloning the simulator.
 
-Stale bridge docs cause agents to generate broken scenes.
+If you also change the React hook commands:
+- Update **`src/hooks/useMCPBridge.ts`** to handle the new command and map it to Zustand store mutations or selectors.
+
+Stale bridge documentation or schemas will cause external agent copilots to generate invalid scene graphs or make broken calls.
 
 ---
 

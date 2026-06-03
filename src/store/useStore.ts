@@ -6,6 +6,99 @@ import { PRESETS, pendulumPreset, generateGearGeoms } from '../presets/presetSce
 
 const initialScene: SceneGraph = pendulumPreset;
 
+// Returns true if every geom on a node is a mesh (so pos/euler are meaningless for rendering)
+const isAllMeshNode = (node: any) =>
+  node.geoms?.length > 0 && node.geoms.every((g: any) => g.type === 'mesh');
+
+const isDynamicMesh = (g: any) => g.type === 'mesh' && g.dynamic && g.renderVertices;
+const isStaticMesh  = (g: any) => g.type === 'mesh' && !g.dynamic && g.vertices;
+
+// Apply a function to flat vertex array in-place
+const mapVerts = (v: number[], fn: (x: number, y: number, z: number) => [number,number,number]) => {
+  for (let i = 0; i < v.length; i += 3) {
+    const [nx, ny, nz] = fn(v[i], v[i+1], v[i+2]);
+    v[i] = nx; v[i+1] = ny; v[i+2] = nz;
+  }
+  return v;
+};
+
+// Translate static mesh geom vertices (Y-up world space)
+const translateMeshGeoms = (node: any, dx: number, dy: number, dz: number) => {
+  for (const g of node.geoms) {
+    if (isStaticMesh(g)) {
+      g.vertices = mapVerts([...g.vertices], (x,y,z) => [x+dx, y+dy, z+dz]);
+    }
+    // Dynamic meshes are positioned via body pos — no vertex transform needed
+  }
+};
+
+// Rotate static mesh geom vertices around axis (degrees) about their centroid
+// Dynamic mesh renderVertices are centroid-local — rotate them directly around origin
+const rotateMeshGeoms = (node: any, axis: 0 | 1 | 2, deltaDeg: number) => {
+  const rad = (deltaDeg * Math.PI) / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+
+  const rotateAboutOrigin = (v: number[]) => mapVerts(v, (x, y, z) => {
+    if (axis === 0) return [x,  y*cos - z*sin,  y*sin + z*cos];
+    if (axis === 1) return [x*cos + z*sin,  y,  -x*sin + z*cos];
+    return [x*cos - y*sin,  x*sin + y*cos,  z];
+  });
+
+  for (const g of node.geoms) {
+    if (isStaticMesh(g)) {
+      const v = [...g.vertices] as number[];
+      let cx = 0, cy = 0, cz = 0;
+      const n = v.length / 3;
+      for (let i = 0; i < v.length; i += 3) { cx += v[i]; cy += v[i+1]; cz += v[i+2]; }
+      cx /= n; cy /= n; cz /= n;
+      // Translate to origin, rotate, translate back
+      const centred = mapVerts([...v], (x,y,z) => [x-cx, y-cy, z-cz]);
+      const rotated = rotateAboutOrigin(centred);
+      g.vertices = mapVerts(rotated, (x,y,z) => [x+cx, y+cy, z+cz]);
+    }
+    if (isDynamicMesh(g)) {
+      // renderVertices are already centroid-local — rotate directly
+      // Note: renderVertices are Z-up (MuJoCo space), so axis mapping is different:
+      // UI axis 0=X, 1=Y(up in Three.js = Z in MuJoCo), 2=Z(depth in Three.js = -Y in MuJoCo)
+      const mujocoAxis = axis === 1 ? 2 : axis === 2 ? 1 : 0;
+      const v = [...g.renderVertices] as number[];
+      const rotateZup = mapVerts(v, (x, y, z) => {
+        if (mujocoAxis === 0) return [x,  y*cos - z*sin,  y*sin + z*cos];
+        if (mujocoAxis === 1) return [x*cos + z*sin,  y,  -x*sin + z*cos];
+        return [x*cos - y*sin,  x*sin + y*cos,  z];
+      });
+      g.renderVertices = rotateZup;
+    }
+  }
+};
+
+// Scale mesh geoms uniformly about their centroid
+export const scaleMeshGeoms = (node: any, scale: number) => {
+  for (const g of node.geoms) {
+    if (isStaticMesh(g)) {
+      const v = [...g.vertices] as number[];
+      let cx = 0, cy = 0, cz = 0;
+      const n = v.length / 3;
+      for (let i = 0; i < v.length; i += 3) { cx += v[i]; cy += v[i+1]; cz += v[i+2]; }
+      cx /= n; cy /= n; cz /= n;
+      g.vertices = mapVerts(v, (x,y,z) => [cx+(x-cx)*scale, cy+(y-cy)*scale, cz+(z-cz)*scale]);
+    }
+    if (isDynamicMesh(g)) {
+      // renderVertices are centroid-local — scale directly about origin
+      g.renderVertices = mapVerts([...g.renderVertices], (x,y,z) => [x*scale, y*scale, z*scale]);
+      // Also scale the MuJoCo collision vertices (Y-up world space)
+      if (g.vertices) {
+        const v = [...g.vertices] as number[];
+        let cx = 0, cy = 0, cz = 0;
+        const n = v.length / 3;
+        for (let i = 0; i < v.length; i += 3) { cx += v[i]; cy += v[i+1]; cz += v[i+2]; }
+        cx /= n; cy /= n; cz /= n;
+        g.vertices = mapVerts(v, (x,y,z) => [cx+(x-cx)*scale, cy+(y-cy)*scale, cz+(z-cz)*scale]);
+      }
+    }
+  }
+};
+
 const getNodeWorldPos = (nodes: any[], targetId: string, currentOffset: [number, number, number] = [0, 0, 0]): [number, number, number] | null => {
   for (const node of nodes) {
     const nodeWorld: [number, number, number] = [
@@ -95,7 +188,7 @@ export interface PhysicsState {
   updateRopeParams: (id: string, params: { pulleyWheelId?: string; leftTargetId?: string; rightTargetId?: string }) => void;
   
   setParentUnderSelected: (val: boolean) => void;
-  addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope', position: number[]) => void;
+  addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh', position: number[]) => void;
   recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => void;
   loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole' | 'newtons_cradle' | 'suspension_bridge' | 'paper_plane' | 'monkey_head' | 'golden_gate' | 'golden_gate_mesh' | 'mesh_collision') => void;
   resetSimulation: () => void;
@@ -277,6 +370,11 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     const traverse = (nodes: any[]) => {
       if (!nodes) return false; for (const node of nodes) {
         if (node.id === id) {
+          if (isAllMeshNode(node)) {
+            // Mesh vertices are baked in world space — translate them directly
+            const [ox, oy, oz] = node.pos as number[];
+            translateMeshGeoms(node, newPos[0] - ox, newPos[1] - oy, newPos[2] - oz);
+          }
           node.pos = newPos;
           return true;
         }
@@ -286,9 +384,6 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     };
     traverse(newScene.nodes);
     set({ sceneGraph: newScene });
-    // Do NOT forceReset here: that would snap all other bodies back to their
-    // initial positions. Without forceReset, the recompile copies old qpos/qvel
-    // so every other body stays exactly where it is.
     get().recompile(newScene, undefined, false);
   },
 
@@ -299,9 +394,15 @@ export const useStore = create<PhysicsState>()((set, get) => ({
       for (const node of nodes) {
         if (node.id === id) {
           const currentEuler = node.euler ? [...node.euler] : [0, 0, 0];
+          const prevDeg = currentEuler[axis] || 0;
           currentEuler[axis] = deg;
           node.euler = currentEuler as [number, number, number];
           delete node.quat;
+          if (isAllMeshNode(node)) {
+            // Rotate mesh vertices in-place around their centroid
+            rotateMeshGeoms(node, axis, deg - prevDeg);
+            // Keep node.euler purely for UI display — it doesn't affect rendering
+          }
           return true;
         }
         if (traverse(node.children)) return true;
@@ -641,8 +742,28 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         size = [1.0, 0.5, 0.25];
         rgba = [0.8, 0.5, 0.2, 1];
         joints = []; // static by default
+      } else if (type === 'mesh') {
+        // Dynamic icosahedron: radius 0.3, centred at body origin.
+        // body pos = localPos handles spawn placement.
+        // vertices: Y-up centred at (0,0,0) for the Three.js static render path fallback.
+        // renderVertices: Z-up centred at (0,0,0) — icosahedron centroid is exactly (0,0,0).
+        geoms = [{
+          name: `${id}_mesh`,
+          type: 'mesh',
+          size: [1],
+          rgba: [0.5, 0.7, 0.9, 1],
+          mass: 1,
+          condim: 3,
+          dynamic: true,
+          vertices: [-0.1577,0.2552,0,0.1577,0.2552,0,-0.1577,-0.2552,0,0.1577,-0.2552,0,0,-0.1577,0.2552,0,0.1577,0.2552,0,-0.1577,-0.2552,0,0.1577,-0.2552,0.2552,0,-0.1577,0.2552,0,0.1577,-0.2552,0,-0.1577,-0.2552,0,0.1577],
+          renderVertices: [-0.1577,0,0.2552,0.1577,0,0.2552,-0.1577,0,-0.2552,0.1577,0,-0.2552,0,-0.2552,-0.1577,0,-0.2552,0.1577,0,0.2552,-0.1577,0,0.2552,0.1577,0.2552,0.1577,0,0.2552,-0.1577,0,-0.2552,0.1577,0,-0.2552,-0.1577,0],
+          faces: [0,11,5,0,5,1,0,1,7,0,7,10,0,10,11,1,5,9,5,11,4,11,10,2,10,7,6,7,1,8,3,9,4,3,4,2,3,2,6,3,6,8,3,8,9,4,9,5,2,4,11,6,2,10,8,6,7,9,8,1],
+        }];
+        joints = [{ name: `${id}_free`, type: 'free' }];
       }
-      geoms = [{ name: `${id}_geom`, type: geomType, size, mass, rgba }];
+      if (type !== 'mesh') {
+        geoms = [{ name: `${id}_geom`, type: geomType, size, mass, rgba }];
+      }
     }
 
     const newNode: SceneNode = {
@@ -796,6 +917,10 @@ export const useStore = create<PhysicsState>()((set, get) => ({
       });
     } catch (e) {
       console.error("Failed to compile MJCF:", e);
+      // Still update the sceneGraph so the UI reflects the change even if MuJoCo rejects it
+      const updates: Partial<PhysicsState> = { sceneGraph };
+      if (overrideSelectedId !== undefined) updates.selectedNodeId = overrideSelectedId;
+      set(updates);
     }
   }
 }));
