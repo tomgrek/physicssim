@@ -1605,7 +1605,8 @@ function App() {
     
     // Choose pretty visual emoji
     let emoji = '📦';
-    if (node.id.includes('gear')) emoji = '⚙️';
+    if (node.id.includes('coin')) emoji = '🪙';
+    else if (node.id.includes('gear')) emoji = '⚙️';
     else if (node.id.includes('pole') || node.id.includes('capsule')) emoji = '🥢';
     else if (node.id.includes('bob')) emoji = '🔵';
     else if (node.id.includes('cylinder')) emoji = '🛢️';
@@ -1682,6 +1683,7 @@ function App() {
                 <option value="golden_gate">🌉 Golden Gate Bridge</option>
                 <option value="golden_gate_mesh">🌉 Golden Gate (Mesh)</option>
                 <option value="mesh_collision">🔺 Mesh Collision Demo</option>
+                <option value="coin_flip">🪙 Coin Flip</option>
               </optgroup>
 
               {/* User Presets */}
@@ -2174,6 +2176,31 @@ function App() {
                         />
                       </div>
                     ))}
+
+                    <h3 className="text-xs font-semibold text-slate-600 mt-2 mb-1 pt-2 border-t border-slate-100">Launch Spin / Angular Velocity (rad/s)</h3>
+                    {['X (Roll)', 'Y (Pitch)', 'Z (Yaw)'].map((label, i) => {
+                      const idx = i + 3;
+                      return (
+                        <div key={label} className="flex flex-col gap-1">
+                          <label className="text-xs font-medium text-slate-500 flex justify-between">
+                            {label} <span>{selectedNode.joints[0].initialVelocity?.[idx] || 0}</span>
+                          </label>
+                          <input
+                            type="range"
+                            min="-50"
+                            max="50"
+                            step="0.5"
+                            value={selectedNode.joints[0].initialVelocity?.[idx] || 0}
+                            onChange={(e) => {
+                              const vel = [...(selectedNode.joints[0].initialVelocity || [0,0,0,0,0,0])];
+                              vel[idx] = parseFloat(e.target.value);
+                              updateNodeJoint(selectedNode.id, { ...selectedNode.joints[0], initialVelocity: vel });
+                            }}
+                            className="w-full accent-blue-500 cursor-pointer"
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

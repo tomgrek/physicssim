@@ -14,6 +14,9 @@ Welcome to the **Physics Expt** development reference guide. This document centr
    * Expose properties transparently with clear labels and interactive `(i)` info icons that link directly to the on-screen reference guide.
 3. **Autonomous Execution with Direct Collaboration**:
    * Never execute automated browser testing scripts during pair-programming sessions. Always present layout changes, UI enhancements, and functional updates directly for manual approval.
+4. **Data-Driven Presets**:
+   * Presets should be purely data-driven, defined as a composition of standard geoms and joints within `src/presets/presetScenes.ts`.
+   * Avoid adding preset-specific logic overrides (such as custom `isCoin` type variables, specialized rendering code blocks inside `App.tsx`, or specialized component types inside `useStore.ts`) to keep the core physics simulator engine and type definitions clean and generic.
 
 ---
 
@@ -30,7 +33,7 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 ### 2. 🪐 Gravity and DOF (Degrees of Freedom)
 * **Static Bodies**: Nodes with `joints: []` have infinite mass and are welded directly to the world frame. Gravity has no effect on them.
 * **Hinge Joints**: constrained to 1D axial rotation. Symmetrical components have their center of mass exactly on the axis pivot, which yields zero gravity-torque.
-* **Free Joints**: Complete 6-DOF unconstrained movement, yielding free-fall acceleration.
+* **Free Joints**: Complete 6-DOF unconstrained movement, yielding free-fall acceleration. Their initial velocity state consists of a 6-element array `[vx, vy, vz, wx, wy, wz]`, where indices 0–2 represent linear velocity ($m/s$) and indices 3–5 represent angular velocity (Roll, Pitch, Yaw in $rad/s$). Both of these are fully adjustable in the properties panel under "Launch Velocity" and "Launch Spin".
 
 ### 3. 💥 Solid vs Ephemeral Collisions
 * Map directly to MuJoCo's `contype` and `conaffinity` attributes.
@@ -185,11 +188,10 @@ function toRenderVerts(yupVerts) {
 
 ---
 
-### Adding a new preset — three places to update
+### Adding a new preset — two places to update
 
 1. **`src/presets/presetScenes.ts`**: add the `export const myPreset` and add it to the `PRESETS` map at the bottom.
-2. **`src/App.tsx`**: add `<option value="my_preset">My Preset</option>` to the hardcoded `<select>` dropdown (~line 1495). This does NOT auto-populate from `PRESETS`.
-3. **`src/store/useStore.ts`**: add `'my_preset'` to the `loadPreset` union type (~line 100).
+2. **`src/App.tsx`**: add `<option value="my_preset">My Preset</option>` to the hardcoded `<select>` dropdown (Built-in Presets list). This does NOT auto-populate from `PRESETS`.
 
 ---
 

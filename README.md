@@ -59,6 +59,7 @@ http://localhost:5175?mcpPort=3142
 | `golden_gate` | Golden Gate Bridge (simulating, wind-responsive) |
 | `golden_gate_mesh` | Golden Gate Bridge (static mesh, visual only) |
 | `mesh_collision` | Dynamic mesh pyramid sliding off a ramp |
+| `coin_flip` | Bouncy coin flipped into the air with angular spin |
 
 ## Coordinate System
 

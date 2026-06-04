@@ -1055,6 +1055,102 @@ export const meshCollisionPreset: SceneGraph = (() => {
   };
 })()
 
+export const coinFlipPreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'coin',
+      name: 'coin',
+      type: 'body',
+      pos: [0, 0, 0.5],
+      joints: [
+        { name: 'coin_free', type: 'free', initialVelocity: [0.0, 0.0, 5.0, 0.0, 15.0, 0.0] }
+      ],
+      geoms: [
+        {
+          name: 'coin_base',
+          type: 'cylinder',
+          size: [0.25, 0.04],
+          rgba: [0.85, 0.65, 0.12, 1],
+          mass: 0.1,
+          condim: 3,
+          friction: [0.3, 0.005, 0.0001]
+        },
+        {
+          name: 'coin_heads_face',
+          type: 'cylinder',
+          size: [0.25, 0.001],
+          pos: [0, 0, 0.04],
+          rgba: [0.95, 0.85, 0.3, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        },
+        {
+          name: 'coin_heads_h1',
+          type: 'box',
+          size: [0.0125, 0.06, 0.004],
+          pos: [-0.05, 0, 0.042],
+          rgba: [0.4, 0.3, 0.1, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        },
+        {
+          name: 'coin_heads_h2',
+          type: 'box',
+          size: [0.0125, 0.06, 0.004],
+          pos: [0.05, 0, 0.042],
+          rgba: [0.4, 0.3, 0.1, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        },
+        {
+          name: 'coin_heads_h3',
+          type: 'box',
+          size: [0.0375, 0.0125, 0.004],
+          pos: [0, 0, 0.042],
+          rgba: [0.4, 0.3, 0.1, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        },
+        {
+          name: 'coin_tails_face',
+          type: 'cylinder',
+          size: [0.25, 0.001],
+          pos: [0, 0, -0.04],
+          rgba: [0.75, 0.75, 0.8, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        },
+        {
+          name: 'coin_tails_t1',
+          type: 'box',
+          size: [0.055, 0.0125, 0.004],
+          pos: [0, 0.045, -0.042],
+          rgba: [0.25, 0.25, 0.25, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        },
+        {
+          name: 'coin_tails_t2',
+          type: 'box',
+          size: [0.0125, 0.045, 0.004],
+          pos: [0, -0.0125, -0.042],
+          rgba: [0.25, 0.25, 0.25, 1],
+          mass: 0.001,
+          contype: 0,
+          conaffinity: 0
+        }
+      ],
+      children: []
+    }
+  ]
+};
+
 export const emptyPreset: SceneGraph = {
   nodes: []
 };
@@ -1123,5 +1219,9 @@ export const PRESETS = {
   mesh_collision: {
     name: 'Mesh Collision Demo',
     scene: meshCollisionPreset
+  },
+  coin_flip: {
+    name: 'Coin Flip',
+    scene: coinFlipPreset
   }
 };
