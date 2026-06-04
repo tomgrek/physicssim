@@ -4,8 +4,8 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useMCPBridge } from './hooks/useMCPBridge';
 import { useStore, scaleMeshGeoms } from './store/useStore';
-import type { SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2 } from 'lucide-react';
+import type { SceneGraph, SceneNode } from './types/scene';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
@@ -1261,6 +1261,80 @@ const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSele
 
 const CAMERA_CONFIG = { position: [5, 2, 5] as [number, number, number], fov: 50 };
 
+const getSyncedSceneGraph = (
+  scene: SceneGraph,
+  model: any,
+  data: any,
+  mujoco: any
+): SceneGraph => {
+  if (!model || !data || !mujoco) return scene;
+
+  const sceneCopy = JSON.parse(JSON.stringify(scene)) as SceneGraph;
+
+  const syncNode = (
+    node: SceneNode,
+    parentWorldPos: THREE.Vector3,
+    parentWorldQuat: THREE.Quaternion
+  ) => {
+    if (node.isPulleyRope) {
+      if (node.children) {
+        for (const child of node.children) {
+          syncNode(child, parentWorldPos, parentWorldQuat);
+        }
+      }
+      return;
+    }
+
+    const bodyId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.name);
+    
+    let currentWorldPos = parentWorldPos.clone();
+    let currentWorldQuat = parentWorldQuat.clone();
+
+    if (bodyId !== -1) {
+      const px = data.xpos[bodyId * 3];
+      const py = data.xpos[bodyId * 3 + 1];
+      const pz = data.xpos[bodyId * 3 + 2];
+      currentWorldPos.set(px, py, pz);
+
+      const m = data.xmat;
+      const offset = bodyId * 9;
+      const rotationMatrix = new THREE.Matrix4().set(
+        m[offset],     m[offset + 1], m[offset + 2], 0,
+        m[offset + 3], m[offset + 4], m[offset + 5], 0,
+        m[offset + 6], m[offset + 7], m[offset + 8], 0,
+        0,             0,             0,             1
+      );
+      currentWorldQuat.setFromRotationMatrix(rotationMatrix);
+
+      const parentQuatInv = parentWorldQuat.clone().invert();
+      const localPos = currentWorldPos.clone().sub(parentWorldPos).applyQuaternion(parentQuatInv);
+      const localQuat = parentQuatInv.clone().multiply(currentWorldQuat);
+
+      node.pos = [localPos.x, localPos.y, localPos.z];
+      node.quat = [localQuat.w, localQuat.x, localQuat.y, localQuat.z];
+      
+      if (node.euler) {
+        delete node.euler;
+      }
+    }
+
+    if (node.children) {
+      for (const child of node.children) {
+        syncNode(child, currentWorldPos, currentWorldQuat);
+      }
+    }
+  };
+
+  const identityQuat = new THREE.Quaternion(0, 0, 0, 1);
+  const zeroPos = new THREE.Vector3(0, 0, 0);
+
+  for (const node of sceneCopy.nodes) {
+    syncNode(node, zeroPos, identityQuat);
+  }
+
+  return sceneCopy;
+};
+
 function App() {
   if (typeof window !== 'undefined') {
     (window as any).useStore = useStore;
@@ -1270,9 +1344,14 @@ function App() {
   const [docsTab, setDocsTab] = useState<'gravity' | 'coupling' | 'collision' | 'friction' | 'scripting'>('gravity');
   const [scriptText, setScriptText] = useState('');
   const [scriptError, setScriptError] = useState<string | null>(null);
+  const [meshEditorGeom, setMeshEditorGeom] = useState<string | null>(null);
+  const [meshEditorText, setMeshEditorText] = useState('');
+  const [meshEditorError, setMeshEditorError] = useState<string | null>(null);
   const [showApiRef, setShowApiRef] = useState(false);
   const [propertiesWidth, setPropertiesWidth] = useState(380);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [presetNameInput, setPresetNameInput] = useState('');
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1291,7 +1370,7 @@ function App() {
   }, []);
 
   const { 
-    model, data, mujoco, recompileId,
+    model, data, mujoco, recompileId, activePreset,
     isPlaying, togglePlay, isLoaded, 
     isSettingsOpen, setSettingsOpen, 
     gravityZ, windX, windY, density, floorFriction, setEnvironment,
@@ -1304,6 +1383,70 @@ function App() {
     updateWedgeParams, updatePulleyParams, updateRopeParams,
     parentUnderSelected, setParentUnderSelected, updateNodeScript, updateNode
   } = useStore();
+
+  const handleSavePresetClick = useCallback(() => {
+    setPresetNameInput('');
+    setIsSaveModalOpen(true);
+  }, []);
+
+  const handleConfirmSavePreset = useCallback(() => {
+    const name = presetNameInput.trim();
+    if (!name) return;
+    try {
+      const syncedScene = getSyncedSceneGraph(sceneGraph, model, data, mujoco);
+      const userPresets = JSON.parse(localStorage.getItem('physics_user_presets') || '{}');
+      userPresets[name] = syncedScene;
+      localStorage.setItem('physics_user_presets', JSON.stringify(userPresets));
+      loadPreset(`user:${name}`);
+    } catch (e) {
+      console.error('Failed to save user preset', e);
+    }
+    setIsSaveModalOpen(false);
+    setPresetNameInput('');
+  }, [presetNameInput, sceneGraph, model, data, mujoco, loadPreset]);
+
+  const exportJson = useCallback(() => {
+    try {
+      const syncedScene = getSyncedSceneGraph(sceneGraph, model, data, mujoco);
+      const dataStr = JSON.stringify(syncedScene, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'physics_expt_scene.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Failed to export JSON', e);
+      alert('Failed to export JSON');
+    }
+  }, [sceneGraph, model, data, mujoco]);
+
+  const importJson = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e: any) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const parsed = JSON.parse(e.target?.result as string);
+          if (parsed && Array.isArray(parsed.nodes)) {
+            if (isPlaying) togglePlay();
+            updateScene(parsed);
+          } else {
+            alert('Invalid scene JSON format. Must contain a "nodes" array.');
+          }
+        } catch (err) {
+          alert('Failed to parse JSON file');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }, [isPlaying, togglePlay, updateScene]);
 
   // Helper to find a node by ID in hierarchy
   const findNodeById = useCallback((nodes: any[], targetId: string): any | null => {
@@ -1442,7 +1585,7 @@ function App() {
     }
   };
 
-  const handleAddComponentClick = (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope') => {
+  const handleAddComponentClick = (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh') => {
     if (selectedNodeId) {
       const parentNode = findNodeById(sceneGraph.nodes, selectedNodeId);
       if (parentNode) {
@@ -1518,26 +1661,71 @@ function App() {
           <div className="flex items-center gap-1 md:gap-2">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:inline">Preset:</span>
             <select 
-              onChange={(e) => loadPreset(e.target.value as any)}
+              value={activePreset || ''}
+              onChange={(e) => loadPreset(e.target.value)}
               className="px-2 md:px-3 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 text-xs md:text-sm font-medium text-slate-700 shadow-sm outline-none cursor-pointer focus:border-blue-500 max-w-[100px] sm:max-w-[130px] md:max-w-none"
-              defaultValue="pendulum"
             >
-              <option value="pendulum">Double Pendulum</option>
-              <option value="cubes">Stacked Cubes</option>
-              <option value="gears">Gear System</option>
-              <option value="machine">Gear Train Machine</option>
-              <option value="rack_pinion">Rack & Pinion</option>
-              <option value="inclined_plane">Inclined Plane</option>
-              <option value="pulley_system">Pulley Stand</option>
-              <option value="cartpole">Cartpole</option>
-              <option value="newtons_cradle">Newton's Cradle</option>
-              <option value="suspension_bridge">Suspension Bridge</option>
-              <option value="paper_plane">✈ Paper Plane</option>
-              <option value="monkey_head">🐵 Monkey Head</option>
-              <option value="golden_gate">🌉 Golden Gate Bridge</option>
-              <option value="golden_gate_mesh">🌉 Golden Gate (Mesh)</option>
-              <option value="mesh_collision">🔺 Mesh Collision Demo</option>
+              <optgroup label="⬜ Built-in Presets">
+                <option value="empty">🫙 Blank (Empty)</option>
+                <option value="pendulum">Double Pendulum</option>
+                <option value="cubes">Stacked Cubes</option>
+                <option value="gears">Gear System</option>
+                <option value="machine">Gear Train Machine</option>
+                <option value="rack_pinion">Rack & Pinion</option>
+                <option value="inclined_plane">Inclined Plane</option>
+                <option value="pulley_system">Pulley Stand</option>
+                <option value="cartpole">Cartpole</option>
+                <option value="newtons_cradle">Newton's Cradle</option>
+                <option value="suspension_bridge">Suspension Bridge</option>
+                <option value="paper_plane">✈ Paper Plane</option>
+                <option value="monkey_head">🐵 Monkey Head</option>
+                <option value="golden_gate">🌉 Golden Gate Bridge</option>
+                <option value="golden_gate_mesh">🌉 Golden Gate (Mesh)</option>
+                <option value="mesh_collision">🔺 Mesh Collision Demo</option>
+              </optgroup>
+
+              {/* User Presets */}
+              {(() => {
+                try {
+                  const userPresets = JSON.parse(localStorage.getItem('physics_user_presets') || '{}');
+                  const keys = Object.keys(userPresets);
+                  if (keys.length === 0) return null;
+                  return (
+                    <optgroup label="📁 Saved Presets">
+                      {keys.sort().map(k => (
+                        <option key={`user:${k}`} value={`user:${k}`}>💾 {k}</option>
+                      ))}
+                    </optgroup>
+                  );
+                } catch {
+                  return null;
+                }
+              })()}
             </select>
+
+            <button 
+              onClick={handleSavePresetClick}
+              className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
+              title="Save scene preset"
+            >
+              <Save className="w-4 h-4" />
+            </button>
+
+            <button 
+              onClick={exportJson}
+              className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
+              title="Export JSON"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+
+            <button 
+              onClick={importJson}
+              className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
+              title="Import JSON"
+            >
+              <Upload className="w-4 h-4" />
+            </button>
           </div>
 
           <button
@@ -2090,18 +2278,29 @@ function App() {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-slate-500 flex items-center justify-between font-medium">Z Position (Height)
-                      <span>{selectedNode.pos[2].toFixed(2)} m</span>
-                    </label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="10" 
-                      step="0.05" 
-                      className="w-full accent-blue-500 cursor-pointer" 
-                      value={selectedNode.pos[2]} 
-                      onChange={(e) => handleMove(2, parseFloat(e.target.value))} 
-                    />
+                    {(() => {
+                      // For dynamic mesh bodies, pos[2] = centroid Z, not base Z.
+                      // Compute centroid offset from renderVertices so slider 0 = base on ground.
+                      const dynMesh = selectedNode.geoms?.find((g: any) => g.dynamic && g.renderVertices);
+                      const centroidZ = dynMesh
+                        ? -Math.min(...(dynMesh.renderVertices as number[]).filter((_: number, i: number) => i % 3 === 2))
+                        : 0;
+                      const displayZ = selectedNode.pos[2] - centroidZ;
+                      return (<>
+                        <label className="text-xs text-slate-500 flex items-center justify-between font-medium">Z Position (Height)
+                          <span>{displayZ.toFixed(2)} m{centroidZ > 0 ? <span className="text-slate-300 ml-1">(+{centroidZ.toFixed(3)} centroid)</span> : null}</span>
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="10"
+                          step="0.05"
+                          className="w-full accent-blue-500 cursor-pointer"
+                          value={displayZ}
+                          onChange={(e) => handleMove(2, parseFloat(e.target.value) + centroidZ)}
+                        />
+                      </>);
+                    })()}
                   </div>
                   <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
                     <label className="text-xs text-slate-500 flex items-center justify-between font-medium">X Rotation
@@ -3035,37 +3234,126 @@ function App() {
                         </span>
                       </div>
                       {g.type === 'mesh' && g.vertices && g.vertices.length > 0 && (
-                        <button
-                          onClick={() => {
-                            const unique = new Map<string, number>();
-                            const newVerts: number[] = [];
-                            const remap: number[] = [];
-                            for (let i = 0; i < g.vertices.length; i += 3) {
-                              const key = `${g.vertices[i].toFixed(4)},${g.vertices[i+1].toFixed(4)},${g.vertices[i+2].toFixed(4)}`;
-                              if (!unique.has(key)) { unique.set(key, newVerts.length / 3); newVerts.push(g.vertices[i], g.vertices[i+1], g.vertices[i+2]); }
-                              remap[i/3] = unique.get(key)!;
-                            }
-                            const filteredFaces: number[] = [];
-                            for (let i = 0; i < g.faces.length; i += 3) {
-                              const a = remap[g.faces[i]], b = remap[g.faces[i+1]], c = remap[g.faces[i+2]];
-                              if (a !== b && b !== c && a !== c) filteredFaces.push(a, b, c);
-                            }
-                            const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
-                            const traverse = (nodes: any[]): boolean => {
-                              for (const node of nodes) {
-                                const idx = node.geoms?.findIndex((ng: any) => ng.name === g.name);
-                                if (idx >= 0) { node.geoms[idx] = { ...node.geoms[idx], vertices: newVerts, faces: filteredFaces }; return true; }
-                                if (traverse(node.children)) return true;
-                              }
-                              return false;
-                            };
-                            traverse(newScene.nodes);
-                            useStore.getState().updateScene(newScene);
-                          }}
-                          className="flex items-center justify-center gap-1.5 px-2 py-1.5 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded text-[10px] font-semibold text-violet-700 transition-colors cursor-pointer"
-                        >
-                          <Minimize2 className="w-3 h-3" /> Simplify (deduplicate vertices)
-                        </button>
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => {
+                                if (meshEditorGeom === g.name) { setMeshEditorGeom(null); return; }
+                                // Format vertices as one triplet per line, faces as one triangle per line
+                                const vLines = [];
+                                for (let i = 0; i < g.vertices.length; i += 3)
+                                  vLines.push(`${g.vertices[i]} ${g.vertices[i+1]} ${g.vertices[i+2]}`);
+                                const fLines = [];
+                                for (let i = 0; i < g.faces.length; i += 3)
+                                  fLines.push(`${g.faces[i]} ${g.faces[i+1]} ${g.faces[i+2]}`);
+                                setMeshEditorText(`# vertices (x y z, one per line — Three.js Y-up space)\n${vLines.join('\n')}\n\n# faces (i j k triangle indices, one per line)\n${fLines.join('\n')}`);
+                                setMeshEditorError(null);
+                                setMeshEditorGeom(g.name);
+                              }}
+                              className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded text-[10px] font-semibold text-violet-700 transition-colors cursor-pointer"
+                            >
+                              <Code className="w-3 h-3" /> {meshEditorGeom === g.name ? 'Close Editor' : 'Edit Vertices'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                const unique = new Map<string, number>();
+                                const newVerts: number[] = [], remap: number[] = [];
+                                for (let i = 0; i < g.vertices.length; i += 3) {
+                                  const key = `${g.vertices[i].toFixed(4)},${g.vertices[i+1].toFixed(4)},${g.vertices[i+2].toFixed(4)}`;
+                                  if (!unique.has(key)) { unique.set(key, newVerts.length/3); newVerts.push(g.vertices[i], g.vertices[i+1], g.vertices[i+2]); }
+                                  remap[i/3] = unique.get(key)!;
+                                }
+                                const filteredFaces: number[] = [];
+                                for (let i = 0; i < g.faces.length; i += 3) {
+                                  const a=remap[g.faces[i]], b=remap[g.faces[i+1]], c=remap[g.faces[i+2]];
+                                  if (a!==b && b!==c && a!==c) filteredFaces.push(a,b,c);
+                                }
+                                const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
+                                const traverse = (nodes: any[]): boolean => { for (const node of nodes) { const idx = node.geoms?.findIndex((ng: any) => ng.name === g.name); if (idx >= 0) { node.geoms[idx] = {...node.geoms[idx], vertices: newVerts, faces: filteredFaces}; return true; } if (traverse(node.children)) return true; } return false; };
+                                traverse(newScene.nodes);
+                                useStore.getState().updateScene(newScene);
+                              }}
+                              className="flex items-center justify-center gap-1 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded text-[10px] font-semibold text-slate-600 transition-colors cursor-pointer"
+                              title="Remove duplicate vertices"
+                            >
+                              <Minimize2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                          {meshEditorGeom === g.name && (
+                            <div className="flex flex-col gap-1.5">
+                              <textarea
+                                value={meshEditorText}
+                                onChange={(e) => setMeshEditorText(e.target.value)}
+                                className="w-full h-48 font-mono text-[10px] leading-relaxed p-2 bg-slate-950 text-violet-300 rounded border border-slate-700 focus:outline-none focus:ring-1 focus:ring-violet-500 resize-y"
+                                spellCheck={false}
+                              />
+                              {meshEditorError && (
+                                <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5">{meshEditorError}</div>
+                              )}
+                              <button
+                                onClick={() => {
+                                  try {
+                                    // Parse using the explicit # vertices / # faces section markers
+                                    // Everything before the blank line / # faces comment = vertices
+                                    // Everything after = faces
+                                    const newVerts: number[] = [], newFaces: number[] = [];
+                                    let section: 'vertices' | 'faces' = 'vertices';
+                                    for (const raw of meshEditorText.split('\n')) {
+                                      const line = raw.trim();
+                                      if (!line) continue;
+                                      if (line.startsWith('#')) {
+                                        if (line.toLowerCase().includes('face')) section = 'faces';
+                                        else if (line.toLowerCase().includes('vert')) section = 'vertices';
+                                        continue;
+                                      }
+                                      const nums = line.split(/[\s,]+/).map(Number);
+                                      if (nums.length !== 3 || nums.some(isNaN)) throw new Error(`Bad line: "${raw.trim()}" — expected exactly 3 numbers`);
+                                      if (section === 'vertices') newVerts.push(...nums);
+                                      else newFaces.push(...nums);
+                                    }
+                                    if (newVerts.length < 9) throw new Error('Need at least 3 vertices');
+                                    if (newFaces.length < 3) throw new Error('Need at least 1 face');
+                                    const nv = newVerts.length / 3;
+                                    const badIdx = newFaces.find(i => !Number.isInteger(i) || i < 0 || i >= nv);
+                                    if (badIdx !== undefined) throw new Error(`Face index ${badIdx} out of range (0–${nv-1})`);
+                                    // If this is a dynamic mesh, recompute renderVertices from the new vertices.
+                                    // renderVertices = raw Z-up: Y-up (x,y,z) → Z-up (x,-z,y), no centroid subtraction.
+                                    // MuJoCo recenters the mesh internally; xpos tracks the recentered frame.
+                                    let newRenderVerts: number[] | undefined;
+                                    if (g.dynamic) {
+                                      newRenderVerts = [];
+                                      for (let i = 0; i < newVerts.length; i += 3) {
+                                        const x = newVerts[i], y = newVerts[i+1], z = newVerts[i+2];
+                                        newRenderVerts.push(+x.toFixed(5), +(-z).toFixed(5), +y.toFixed(5));
+                                      }
+                                    }
+                                    const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
+                                    const traverse = (nodes: any[]): boolean => {
+                                      for (const node of nodes) {
+                                        const idx = node.geoms?.findIndex((ng: any) => ng.name === g.name);
+                                        if (idx >= 0) {
+                                          node.geoms[idx] = {...node.geoms[idx], vertices: newVerts, faces: newFaces, ...(newRenderVerts ? {renderVertices: newRenderVerts} : {})};
+                                          return true;
+                                        }
+                                        if (traverse(node.children)) return true;
+                                      }
+                                      return false;
+                                    };
+                                    traverse(newScene.nodes);
+                                    useStore.getState().updateScene(newScene);
+                                    setMeshEditorError(null);
+                                    setMeshEditorGeom(null);
+                                  } catch (e: any) {
+                                    setMeshEditorError(e.message);
+                                  }
+                                }}
+                                className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded text-[10px] font-semibold cursor-pointer transition-colors"
+                              >
+                                Apply Mesh
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   ))}
@@ -3538,6 +3826,49 @@ api.setActuatorControl('cart_slide_actuator', 1.0); // Drive cart at 1.0 m/s`}
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isSaveModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-2xl max-w-md w-full p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+                <Save className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="font-bold text-slate-800 text-base">Save Scene Preset</h2>
+                <p className="text-xs text-slate-500">Give your scene a name to save it locally</p>
+              </div>
+            </div>
+            <input
+              autoFocus
+              type="text"
+              placeholder="e.g. Double Pendulum Wave"
+              value={presetNameInput}
+              onChange={(e) => setPresetNameInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleConfirmSavePreset();
+                if (e.key === 'Escape') setIsSaveModalOpen(false);
+              }}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => setIsSaveModalOpen(false)}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmSavePreset}
+                disabled={!presetNameInput.trim()}
+                className="px-4 py-2 font-semibold text-white bg-blue-500 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors"
+              >
+                Save
+              </button>
             </div>
           </div>
         </div>

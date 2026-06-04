@@ -17,6 +17,8 @@ export interface SceneGeom {
   friction?: number[];
   solref?: number[];
   solimp?: number[];
+  margin?: number;
+  gap?: number;
   // For type='mesh': flat array of vertex positions (x0,y0,z0, x1,y1,z1, ...) and
   // flat array of triangle face indices (i0,j0,k0, i1,j1,k1, ...).
   // vertices are in Three.js Y-up space; the mjcf builder swaps Y↔Z for MuJoCo.

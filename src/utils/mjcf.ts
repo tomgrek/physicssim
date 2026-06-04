@@ -21,6 +21,8 @@ const buildGeom = (geom: SceneGeom) => {
   if (geom.friction !== undefined) attrs += ` friction="${geom.friction.join(' ')}"`;
   if (geom.solref) attrs += ` solref="${geom.solref.join(' ')}"`;
   if (geom.solimp) attrs += ` solimp="${geom.solimp.join(' ')}"`;
+  if (geom.margin !== undefined) attrs += ` margin="${geom.margin}"`;
+  if (geom.gap !== undefined) attrs += ` gap="${geom.gap}"`;
   return `<geom ${attrs} />`;
 };
 
@@ -343,13 +345,13 @@ export const compileToMJCF = (
 
   return `
 <mujoco model="dynamic_scene">
-  <option timestep="0.001" gravity="0 0 ${gravityZ}" wind="${windX} ${windY} 0" density="${density}" />${assetXml}
+  <option timestep="0.001" gravity="0 0 ${gravityZ}" wind="${windX} ${windY} 0" density="${density}" iterations="50" tolerance="1e-10" ls_iterations="50" ls_tolerance="1e-12" />${assetXml}
   <default>
-    <geom solref="-1000 -100" solimp="0.95 0.99 0.001 0.5 2" />
+    <geom solref="-10000 -1000" solimp="0.99 0.9999 0.0001 0.5 2" />
   </default>
   <worldbody>
     <light directional="true" pos="-0.5 0.5 3" dir="0.5 -0.5 -3" diffuse="0.8 0.8 0.8" />
-    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.9 0.9 0.9 1" friction="${floorFriction} 0.005 0.0001" solref="-1000 0" solimp="0.95 0.99 0.001 0.5 2" />
+    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.9 0.9 0.9 1" friction="${floorFriction} 0.005 0.0001" solref="-10000 -1000" solimp="0.99 0.9999 0.0001 0.5 2" />
     
     ${sceneCopy.nodes.map(buildNode).join('\n')}
   </worldbody>

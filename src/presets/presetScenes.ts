@@ -971,13 +971,14 @@ export const goldenGateMeshPreset: SceneGraph = (() => {
 // Ramp centroid (Z-up): (0, 0.2, 0.1667). Pyramid centroid (Z-up): (0, 0, 0.125).
 export const meshCollisionPreset: SceneGraph = (() => {
   // Y-up verts (Three.js) → fed to mjcf builder which swaps Y↔Z for MuJoCo
+  // Ramp slopes in X (left→right goes up), depth in Z — pyramid slides along X, stays near Z=0
   const rampYup = [
-    -0.6, 0,   -0.6,
-     0.6, 0,   -0.6,
-    -0.6, 0.5,  0.6,
-     0.6, 0.5,  0.6,
-    -0.6, 0,    0.6,
-     0.6, 0,    0.6,
+    -0.6, 0,   -0.3,
+    -0.6, 0,    0.3,
+     0.6, 0.5, -0.3,
+     0.6, 0.5,  0.3,
+     0.6, 0,   -0.3,
+     0.6, 0,    0.3,
   ];
   const rampFaces = [0,1,3, 0,3,2, 0,2,4, 1,3,5, 2,3,5, 2,5,4, 0,5,1, 0,4,5];
 
@@ -988,32 +989,27 @@ export const meshCollisionPreset: SceneGraph = (() => {
     -0.3, 0, -0.3,
      0.0, 0.5, 0.0,
   ];
-  const pyramidFaces = [0,1,4, 1,2,4, 2,3,4, 3,0,4, 0,2,1, 0,3,2];
+  const pyramidFaces = [0,4,1, 1,4,2, 2,4,3, 3,4,0, 0,1,2, 0,2,3];
 
-  // renderVertices: Z-up, volume-centroid subtracted (values from mj_forward measurement)
-  // Ramp centroid = (0, 0.2, 0.1667) in Z-up
+  // renderVertices: raw Z-up (Y↔Z swap only, no centroid subtraction).
+  // MuJoCo recenters the mesh internally; xpos tracks the recentered body frame.
+  // Using raw Z-up means rendered position = xpos + raw_vertex, which is correct.
   const rampRV = [
-    -0.6, -0.8,   -0.1667,
-     0.6, -0.8,   -0.1667,
-    -0.6,  0.4,    0.3333,
-     0.6,  0.4,    0.3333,
-    -0.6,  0.4,   -0.1667,
-     0.6,  0.4,   -0.1667,
+    -0.6, 0.3, 0,  -0.6, -0.3, 0,
+     0.6, 0.3, 0.5, 0.6, -0.3, 0.5,
+     0.6, 0.3, 0,   0.6, -0.3, 0,
   ];
-  // Pyramid centroid = (0, 0, 0.125) in Z-up
   const pyramidRV = [
-    -0.3,  0.3, -0.125,
-     0.3,  0.3, -0.125,
-     0.3, -0.3, -0.125,
-    -0.3, -0.3, -0.125,
-     0.0,  0.0,  0.375,
+    -0.3, -0.3, 0,  0.3, -0.3, 0,
+     0.3,  0.3, 0, -0.3,  0.3, 0,
+     0.0,  0.0, 0.5,
   ];
 
   return {
     nodes: [
       {
         id: 'ramp', name: 'ramp', type: 'body',
-        pos: [0, 0, 0],  // body_pos.z = desired_base_Z; centroid offset cancels itself
+        pos: [0, 0, 0],
         joints: [],
         geoms: [{
           name: 'ramp_mesh', type: 'mesh', size: [1],
@@ -1026,7 +1022,7 @@ export const meshCollisionPreset: SceneGraph = (() => {
       },
       {
         id: 'pyramid', name: 'pyramid', type: 'body',
-        pos: [-0.2, 0, 1.5],
+        pos: [-0.2, 0.1125, 1.5],  // start above ramp centre, same Y as ramp
         joints: [{ name: 'pyramid_free', type: 'free' }],
         geoms: [{
           name: 'pyramid_mesh', type: 'mesh', size: [1],
@@ -1039,8 +1035,8 @@ export const meshCollisionPreset: SceneGraph = (() => {
         // Its own body centroid is purely its own geometry, keeping renderVertices simple.
         children: [{
           id: 'pyramid_apex', name: 'pyramid_apex', type: 'body',
-          // pos in MuJoCo Z-up relative to pyramid body: apex at Z=0.5, centroid at Z=0.125 → offset = Z+0.375
-          pos: [0, 0, 0.375],
+          // pos in MuJoCo Z-up relative to pyramid body: apex at Z=0.5, centroid at Z=0 → offset = Z+0.5
+          pos: [0, 0, 0.5],
           joints: [],
           geoms: [{
             name: 'apex_poly', type: 'mesh', size: [1],
@@ -1059,7 +1055,15 @@ export const meshCollisionPreset: SceneGraph = (() => {
   };
 })()
 
+export const emptyPreset: SceneGraph = {
+  nodes: []
+};
+
 export const PRESETS = {
+  empty: {
+    name: 'Blank (Empty)',
+    scene: emptyPreset
+  },
   pendulum: {
     name: 'Double Pendulum',
     scene: pendulumPreset

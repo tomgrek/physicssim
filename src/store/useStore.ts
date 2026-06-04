@@ -84,9 +84,9 @@ export const scaleMeshGeoms = (node: any, scale: number) => {
       g.vertices = mapVerts(v, (x,y,z) => [cx+(x-cx)*scale, cy+(y-cy)*scale, cz+(z-cz)*scale]);
     }
     if (isDynamicMesh(g)) {
-      // renderVertices are centroid-local — scale directly about origin
+      // renderVertices are raw Z-up — scale about origin
       g.renderVertices = mapVerts([...g.renderVertices], (x,y,z) => [x*scale, y*scale, z*scale]);
-      // Also scale the MuJoCo collision vertices (Y-up world space)
+      // Also scale the MuJoCo collision vertices (Y-up world space) about their centroid
       if (g.vertices) {
         const v = [...g.vertices] as number[];
         let cx = 0, cy = 0, cz = 0;
@@ -151,6 +151,7 @@ export interface PhysicsState {
   selectedNodeId: string | null;
   recompileId: number;
   parentUnderSelected: boolean;
+  activePreset: string;
   
   draggedNodeId: string | null;
   dragTarget: { x: number; y: number; z: number } | null;
@@ -172,7 +173,8 @@ export interface PhysicsState {
   updateGearTeeth: (id: string, teeth: number) => void;
   updateNodeRotation: (id: string, axis: 0 | 1 | 2, deg: number) => void;
   updateNodeScript: (id: string, script: string) => void;
-  
+  updateNode: (id: string, updates: Partial<SceneNode>) => void;
+
   renameNode: (id: string, newName: string) => void;
   updateNodeJointsList: (id: string, joints: any[]) => void;
   deleteNode: (id: string) => void;
@@ -189,8 +191,8 @@ export interface PhysicsState {
   
   setParentUnderSelected: (val: boolean) => void;
   addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh', position: number[]) => void;
-  recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => void;
-  loadPreset: (name: 'pendulum' | 'cubes' | 'gears' | 'machine' | 'rack_pinion' | 'inclined_plane' | 'pulley_system' | 'cartpole' | 'newtons_cradle' | 'suspension_bridge' | 'paper_plane' | 'monkey_head' | 'golden_gate' | 'golden_gate_mesh' | 'mesh_collision') => void;
+  recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean, keepPreset?: boolean) => void;
+  loadPreset: (name: string) => void;
   resetSimulation: () => void;
 }
 
@@ -214,6 +216,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   sceneGraph: initialScene,
   selectedNodeId: null,
   parentUnderSelected: false,
+  activePreset: 'pendulum',
   draggedNodeId: null,
   dragTarget: null,
   dragDistance: 0,
@@ -228,14 +231,27 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   
   resetSimulation: () => {
     set({ isPlaying: false });
-    get().recompile(undefined, undefined, true);
+    get().recompile(undefined, undefined, true, true);
   },
   
   loadPreset: (name) => {
-    const preset = PRESETS[name];
+    set({ isPlaying: false, selectedNodeId: null, activePreset: name });
+    if (name.startsWith('user:')) {
+      const presetName = name.replace('user:', '');
+      try {
+        const userPresets = JSON.parse(localStorage.getItem('physics_user_presets') || '{}');
+        const savedScene = userPresets[presetName];
+        if (savedScene) {
+          get().recompile(savedScene, null, true, true);
+        }
+      } catch (e) {
+        console.error('Failed to load user preset', e);
+      }
+      return;
+    }
+    const preset = PRESETS[name as keyof typeof PRESETS];
     if (!preset) return;
-    set({ isPlaying: false, selectedNodeId: null });
-    get().recompile(preset.scene, null, true);
+    get().recompile(preset.scene, null, true, true);
   },
   
   setEnvironment: (env) => {
@@ -619,6 +635,22 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     // Note: Live updates do not force model recompiles to support hot-editing of control gains!
   },
 
+  updateNode: (id, updates) => {
+    const newScene = JSON.parse(JSON.stringify(get().sceneGraph));
+    const traverse = (nodes: any[]): boolean => {
+      for (const node of nodes) {
+        if (node.id === id) { Object.assign(node, updates); return true; }
+        if (traverse(node.children)) return true;
+      }
+      return false;
+    };
+    if (traverse(newScene.nodes)) {
+      set({ sceneGraph: newScene });
+      // Recompile so aerodynamics flag propagates to physics loop
+      get().recompile(newScene, undefined, false);
+    }
+  },
+
   updateNodeJointsList: (id, joints) => {
     const newScene = JSON.parse(JSON.stringify(get().sceneGraph)) as SceneGraph;
     const traverse = (nodes: any[]): boolean => {
@@ -756,6 +788,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
           condim: 3,
           dynamic: true,
           vertices: [-0.1577,0.2552,0,0.1577,0.2552,0,-0.1577,-0.2552,0,0.1577,-0.2552,0,0,-0.1577,0.2552,0,0.1577,0.2552,0,-0.1577,-0.2552,0,0.1577,-0.2552,0.2552,0,-0.1577,0.2552,0,0.1577,-0.2552,0,-0.1577,-0.2552,0,0.1577],
+          // renderVertices: raw Z-up (Y↔Z swap only: Y-up (x,y,z)→(x,-z,y)), no centroid subtraction
           renderVertices: [-0.1577,0,0.2552,0.1577,0,0.2552,-0.1577,0,-0.2552,0.1577,0,-0.2552,0,-0.2552,-0.1577,0,-0.2552,0.1577,0,0.2552,-0.1577,0,0.2552,0.1577,0.2552,0.1577,0,0.2552,-0.1577,0,-0.2552,0.1577,0,-0.2552,-0.1577,0],
           faces: [0,11,5,0,5,1,0,1,7,0,7,10,0,10,11,1,5,9,5,11,4,11,10,2,10,7,6,7,1,8,3,9,4,3,4,2,3,2,6,3,6,8,3,8,9,4,9,5,2,4,11,6,2,10,8,6,7,9,8,1],
         }];
@@ -801,7 +834,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     get().recompile(newScene, selectId);
   },
   
-  recompile: async (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean) => {
+  recompile: async (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean, keepPreset?: boolean) => {
     // We only debounce if it's NOT a force reset (which is used by presets/loaders)
     if (!forceReset) {
       if ((window as any)._recompileTimeoutId) clearTimeout((window as any)._recompileTimeoutId);
@@ -824,8 +857,11 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     }
     
     try {
-      console.log("Loading a fresh MuJoCo WASM module...");
-      const freshMujoco = await load_mujoco();
+      let freshMujoco = get().mujoco;
+      if (!freshMujoco) {
+        console.log("Loading a fresh MuJoCo WASM module...");
+        freshMujoco = await load_mujoco();
+      }
       
       const newModel = freshMujoco.MjModel.from_xml_string(xml);
       console.log("newModel created");
@@ -911,6 +947,9 @@ export const useStore = create<PhysicsState>()((set, get) => ({
       // Deferred to next animation frame to avoid blocking the event loop
       const updates: Partial<PhysicsState> = { mujoco: freshMujoco, model: newModel, data: newData, sceneGraph, recompileId: Date.now() };
       if (overrideSelectedId !== undefined) updates.selectedNodeId = overrideSelectedId;
+      if (!keepPreset) {
+        updates.activePreset = '';
+      }
       requestAnimationFrame(() => {
         console.log("Atomic set: fresh mujoco + model + scene together");
         set(updates);
@@ -920,6 +959,9 @@ export const useStore = create<PhysicsState>()((set, get) => ({
       // Still update the sceneGraph so the UI reflects the change even if MuJoCo rejects it
       const updates: Partial<PhysicsState> = { sceneGraph };
       if (overrideSelectedId !== undefined) updates.selectedNodeId = overrideSelectedId;
+      if (!keepPreset) {
+        updates.activePreset = '';
+      }
       set(updates);
     }
   }

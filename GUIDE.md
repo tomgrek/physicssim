@@ -75,11 +75,16 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 
 ## 💻 Practical WSL Development & Simulation Workflow
 
-### 1. 🖧 Windows/WSL Path Mappings
-* **Path Resolution**: The workspace files are accessed in Windows via UNC paths (`\\wsl$\Ubuntu-20.04\home\boab\physics`). However, Windows-based `npm`/`npx` tools will fail with UNC path errors. All dev servers and scripts must be run directly inside the native WSL Linux file system (`/home/boab/physics`).
-* **Environment Execution**: To ensure Node and local tools resolve paths cleanly, run terminal operations via an interactive login shell inside WSL:
+### 1. 🖧 Windows/WSL Path Mappings & Command Execution
+* **Path Resolution**: The workspace files are accessed in Windows via UNC paths (`\\wsl.localhost\Ubuntu-20.04\home\boab\physics`). However, Windows-based `npm`/`npx` tools will fail with UNC path errors or `ERR_INVALID_URL` because standard Windows Node/npm cannot resolve UNC paths natively in CMD.
+* **Avoid Host Leakage**: Calling `npm` directly on the Windows host inside a WSL workspace directory can default to running Windows `npm.cmd` via `cmd.exe`, resulting in errors like `'tsc' is not recognized as an internal or external command`.
+* **WSL NVM Environment Execution**: Node/npm are managed via NVM inside WSL (e.g. `~/.nvm/`). Because NVM is initialized in `.bashrc` / `.bash_profile`, non-interactive shells cannot resolve node or npm commands. Always run builds, dev servers, and diagnostic scripts using an **interactive** bash shell (`-i`) inside the specific WSL distribution:
   ```bash
-  wsl bash -i -l -c "npm run dev"
+  # Execute dev server:
+  wsl -d Ubuntu-20.04 -e bash -i -c "cd /home/boab/physics && npm run dev"
+
+  # Run build:
+  wsl -d Ubuntu-20.04 -e bash -i -c "cd /home/boab/physics && npm run build"
   ```
 
 ### 2. 🚀 Executing TypeScript & ESM in WSL Node
@@ -139,61 +144,44 @@ Requires two extra fields:
 ```ts
 {
   type: 'mesh',
-  vertices: [...],        // Three.js Y-up space — fed to mjcf builder, swapped Y↔Z for MuJoCo
+  vertices: [...],        // Three.js Y-up space — mjcf builder swaps Y↔Z for MuJoCo
   faces: [...],
   dynamic: true,
-  renderVertices: [...],  // MuJoCo Z-up space, volume-centroid subtracted — used by Three.js renderer
+  renderVertices: [...],  // Raw MuJoCo Z-up space (Y↔Z swap only, NO centroid subtraction)
 }
 ```
 
 **Rendering path for dynamic meshes:**
 - Rendered **inside** the `rotation={[-π/2, 0, 0]}` group alongside primitives
-- Position/rotation tracked every frame from `data.xpos[bodyId]` / `data.xmat[bodyId]` — **body** transform, not geom transform
-- `renderVertices` are in body-local Z-up space (centroid at origin), so using body xpos gives correct world placement
-
-**Why body xpos, not geom_xpos:** `geom_xpos = body_pos + volume_centroid_offset`. If you position the mesh group at `geom_xpos` but the vertices are centroid-subtracted, the visual is shifted by the centroid twice. Using `body xpos` cancels this correctly.
+- Position tracked every frame from `data.xpos[bodyId]` / `data.xmat[bodyId]` — **body** transform
+- `renderVertices` are in raw Z-up space; MuJoCo recenters the mesh internally and `xpos` tracks the recentered body frame, so render + physics are automatically aligned
 
 ---
 
 ### Computing renderVertices — the correct workflow
 
-1. **Author `vertices` in Three.js Y-up** as normal.
-
-2. **Measure the volume centroid MuJoCo actually computes.** Do NOT use vertex average — MuJoCo uses volume-weighted centroid (tetrahedra decomposition), which differs significantly for asymmetric shapes. Measure it empirically:
+**Simple**: just swap Y↔Z on each Y-up vertex. No centroid subtraction needed — MuJoCo handles recentering internally.
 
 ```js
-// scratch/test_mesh_collision.mjs pattern:
-const scene = { nodes: [{ id:'s', name:'s', type:'body', pos:[0,0,0],
-  joints:[{name:'f',type:'free'}],
-  geoms:[{name:'g', type:'mesh', size:[1], rgba:[1,0,0,1], mass:1, vertices: yourYupVerts, faces: yourFaces}],
-  children:[] }] };
-const xml = compileToMJCF(scene, -9.81, 1.0, 0, 0, 0);
-const model = mujoco.MjModel.from_xml_string(xml);
-const data = new mujoco.MjData(model);
-mujoco.mj_forward(model, data);
-// geom[0]=floor, geom[1]=your mesh. body at [0,0,0] so geom_xpos = centroid in MuJoCo Z-up
-const centroid = { x: data.geom_xpos[3], y: data.geom_xpos[4], z: data.geom_xpos[5] };
-```
-
-3. **Compute renderVertices**: swap Y↔Z on each vertex, then subtract the measured centroid:
-```js
-function toRenderVerts(yuVerts, centroid) {
+function toRenderVerts(yupVerts) {
   const out = [];
-  for (let i = 0; i < yuVerts.length; i += 3) {
-    // swap Y↔Z to get Z-up, then subtract volume centroid
-    out.push(yuVerts[i] - centroid.x, yuVerts[i+2] - centroid.y, yuVerts[i+1] - centroid.z);
+  for (let i = 0; i < yupVerts.length; i += 3) {
+    const x = yupVerts[i], y = yupVerts[i+1], z = yupVerts[i+2];
+    out.push(x, -z, y);  // Y-up (x,y,z) → Z-up (x,-z,y)
   }
   return out;
 }
 ```
 
-4. **Set body pos**: `body_pos.z = desired_base_Z`. The centroid offset cancels itself — `geom_xpos.z = body_pos.z + centroid.z`, and the mesh base sits at `geom_xpos.z - centroid.z = body_pos.z`. No correction needed.
+**Setting body pos**: `body_pos = [0, 0, 0]` places the mesh where its vertices are in Y-up space. To start an object at a specific height, set `body_pos.z` to the desired height of the body's MuJoCo origin (which MuJoCo places at the mesh's volume centroid). For a mesh whose Y-up base is at Y=0 and centroid is at Y=0.125, set `body_pos.z = 0.125` for the base to sit flush with the ground — **or** just set `body_pos.z = 0` and the mesh will render with its MuJoCo origin at ground level (which visually puts the base at Z = -centroid_height, slightly below ground). Empirically verify by checking `xpos[2]` via the `_mesh_xpos` debug object.
 
-**Reference values** (from `meshCollisionPreset`, measured via mj_forward):
-- Pyramid (base 0.6×0.6, height 0.5, Y-up): centroid = `(0, 0, 0.125)` in MuJoCo Z-up
-- Ramp (triangular prism 1.2×1.2×0.5, Y-up): centroid = `(0, 0.2, 0.167)` in MuJoCo Z-up
+**Face winding**: use outward-facing normals (CCW winding viewed from outside). Wrong winding causes inside-out contact normals and sinking behavior.
 
-See `scratch/test_mesh_collision.mjs` for the full measurement + collision verification script.
+**Child bodies**: for compound mesh objects (mesh + child bodies), the child `pos` offset is in MuJoCo Z-up relative to the **parent body's MuJoCo origin** (which is the volume centroid, not the mesh base). Measure with `_mesh_xpos` debug log.
+
+**Reference** (from `meshCollisionPreset`):
+- Pyramid (base 0.6×0.6×0.6, height 0.5): MuJoCo origin at Z≈0 when resting on floor (`xpos.z ≈ 0`)
+- Ramp (fixed): `body_pos = [0,0,0]`, base flush with ground
 
 ---
 

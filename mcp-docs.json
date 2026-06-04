@@ -21,7 +21,7 @@
     "physics_toggle_play": "Toggle play/pause of the physics simulation.",
     "physics_reset": "Reset the physics simulation to its initial state.",
     "physics_list_presets": "Return available physics scene preset names.",
-    "physics_load_preset": "Load a physics scene preset. Valid presets: pendulum, cubes, gears, machine, rack_pinion, inclined_plane, pulley_system, cartpole, newtons_cradle, suspension_bridge, paper_plane, monkey_head, golden_gate, golden_gate_mesh.",
+    "physics_load_preset": "Load a physics scene preset. Valid presets: pendulum, cubes, gears, machine, rack_pinion, inclined_plane, pulley_system, cartpole, newtons_cradle, suspension_bridge, paper_plane, monkey_head, golden_gate, golden_gate_mesh, mesh_collision.",
     "physics_set_environment": "Update physics environment. gravityZ is negative for downward gravity (e.g. -9.81). windX/windY add lateral fluid drag. density adds buoyancy. floorFriction controls ground grip. All fields optional.",
     "physics_update_scene": "Replace the full scene graph. Must match the SceneGraph type: { nodes: SceneNode[] }. Full control but requires complete valid structure.",
     "physics_get_schema": "Return the full schema describing every geom type, joint type, and field. Call this first when building scenes.",
@@ -61,8 +61,12 @@
       "condim": "1|3|4|6 — contact dimensionality",
       "solref": "[timeconst, dampratio] — constraint solver reference",
       "solimp": "[d0,d1,width,midpoint,power] — constraint solver impedance",
-      "vertices": "number[] — mesh only: flat [x0,y0,z0,...] in Three.js Y-up space",
-      "faces": "number[] — mesh only: flat triangle indices [i0,j0,k0,...]"
+      "vertices": "number[] — mesh only: flat [x0,y0,z0,...] in Three.js Y-up space (X=right, Y=up, Z=toward camera)",
+      "faces": "number[] — mesh only: flat triangle indices [i0,j0,k0,...] with outward-facing (CCW) winding",
+      "dynamic": "boolean — if true, mesh participates fully in simulation and collision (convex hull). Requires renderVertices.",
+      "renderVertices": "number[] — dynamic mesh only: flat [x0,y0,z0,...] in raw MuJoCo Z-up space. Convert from Y-up: (x,y,z)→(x,-z,y). Do NOT subtract centroid — MuJoCo recenters internally and xpos tracks the result.",
+      "margin": "number — expand contact surface outward by this amount (meters). Useful to prevent sinking.",
+      "gap": "number — dead zone inside margin where no contact force is applied."
     },
     "nodeFields": {
       "id": "string — unique body identifier",
@@ -94,9 +98,12 @@
       "actuator": "{ type:'velocity'|'motor', kv?:number, gear?:number, ctrlValue?:number }"
     },
     "meshNotes": {
-      "warning": "Mesh geoms are VISUAL ONLY by default. They do not simulate, move, or collide. A body with only mesh geoms and a free joint will not visually move even though MuJoCo simulates it. Use primitives (box/sphere/capsule/etc) for anything that needs to move or collide.",
-      "coordinates": "Mesh vertices are in Three.js Y-up world space: X=right, Y=up (height), Z=toward camera. Ground is Y=0. This is NOT MuJoCo Z-up space.",
-      "goodUseCases": ["Static background scenery", "Decorative structures (bridges, buildings)", "Visual shells around simpler primitive collision bodies", "Reference geometry that never moves"]
+      "staticMesh": "No dynamic field (or dynamic:false). VISUAL ONLY — does not simulate, move, or collide. Vertices in Three.js Y-up world space. Good for scenery, decorative structures, visual shells around primitive collision proxies.",
+      "dynamicMesh": "dynamic:true. Full physics + collision (convex hull). Vertices in Three.js Y-up for collision, renderVertices in raw MuJoCo Z-up for rendering. Body moves with simulation.",
+      "renderVerticesRule": "renderVertices = Y-up vertices with Y↔Z swapped: (x,y,z)→(x,-z,y). No centroid subtraction. MuJoCo recenters the mesh internally; xpos tracks the body frame correctly.",
+      "faceWinding": "Use outward-facing CCW winding. Wrong winding causes inside-out contact normals and objects sinking through surfaces.",
+      "bodyPos": "For a dynamic mesh whose Y-up base is at Y=0, set body_pos=[0,0,0]. The mesh will render with its MuJoCo origin at ground level. Adjust body_pos.z to raise/lower.",
+      "goodUseCases": ["Static background scenery", "Decorative structures", "Dynamic convex polyhedra (pyramids, crystals, custom shapes)", "Multi-geom bodies (mesh + primitive sub-components)"]
     }
   },
   "examples": [
