@@ -90,7 +90,7 @@
       "type": "hinge|slide|ball|free",
       "axis": "[x,y,z] — rotation/translation axis (hinge/slide only)",
       "pos": "[x,y,z] — joint anchor point in local body space",
-      "damping": "number — velocity-proportional resistance",
+      "damping": "number — velocity-proportional resistance (for free joints, scales drag force/torque to decay velocity and spin uniformly)",
       "stiffness": "number — spring constant pulling back to springref",
       "springref": "number — rest angle/position for spring",
       "limited": "boolean — whether range limits are active",

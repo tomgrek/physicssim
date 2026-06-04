@@ -377,6 +377,45 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
         // Execute active control scripts immediately prior to physics iteration
         executeScripts(sceneGraph.nodes);
 
+        // Apply physical damping to free joints (since MuJoCo free joints don't natively support damping attributes)
+        const applyFreeJointDamping = (nodes: any[]) => {
+          if (!nodes) return;
+          for (const node of nodes) {
+            if (node.joints) {
+              for (const joint of node.joints) {
+                if (joint.type === 'free' && joint.damping !== undefined && joint.damping > 0) {
+                  const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
+                  if (bId !== -1) {
+                    const wx = data.cvel[bId * 6 + 0];
+                    const wy = data.cvel[bId * 6 + 1];
+                    const wz = data.cvel[bId * 6 + 2];
+                    const vx = data.cvel[bId * 6 + 3];
+                    const vy = data.cvel[bId * 6 + 4];
+                    const vz = data.cvel[bId * 6 + 5];
+
+                    const c = joint.damping;
+                    const mass = model.body_mass[bId] || 1.0;
+                    const ix = model.body_inertia[bId * 3 + 0] || 1.0;
+                    const iy = model.body_inertia[bId * 3 + 1] || 1.0;
+                    const iz = model.body_inertia[bId * 3 + 2] || 1.0;
+
+                    // Apply linear damping force: F = -c * mass * v
+                    data.xfrc_applied[bId * 6 + 0] -= c * mass * vx;
+                    data.xfrc_applied[bId * 6 + 1] -= c * mass * vy;
+                    data.xfrc_applied[bId * 6 + 2] -= c * mass * vz;
+                    // Apply angular damping torque: T = -c * inertia * w
+                    data.xfrc_applied[bId * 6 + 3] -= c * ix * wx;
+                    data.xfrc_applied[bId * 6 + 4] -= c * iy * wy;
+                    data.xfrc_applied[bId * 6 + 5] -= c * iz * wz;
+                  }
+                }
+              }
+            }
+            applyFreeJointDamping(node.children || []);
+          }
+        };
+        applyFreeJointDamping(sceneGraph.nodes);
+
         mujoco.mj_step(model, data);
         
         // Record physics history frame
@@ -1352,6 +1391,7 @@ function App() {
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [presetNameInput, setPresetNameInput] = useState('');
+  const [activeGeomIndex, setActiveGeomIndex] = useState(0);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1538,6 +1578,7 @@ function App() {
       setScriptText('');
       setScriptError(null);
     }
+    setActiveGeomIndex(0);
   }, [selectedNodeId, selectedNode?.id]);
 
   const handleSaveScript = useCallback(() => {
@@ -1620,19 +1661,47 @@ function App() {
         <div 
           onClick={() => {
             setSelectedNodeId(node.id);
+            setActiveGeomIndex(0);
             setIsLeftSidebarOpen(false);
           }} 
           style={{ paddingLeft: `${depth * 14 + 8}px` }}
-          className={`flex items-center px-2 py-1.5 rounded-md border cursor-pointer transition-colors shadow-sm mb-1 ${isSelected ? 'bg-blue-50 border-blue-200 text-blue-600 font-semibold' : 'bg-white border-transparent hover:bg-slate-100/70 text-slate-600'}`}
+          className={`flex items-center px-2 py-1.5 rounded-md border cursor-pointer transition-colors shadow-sm mb-1 ${isSelected && activeGeomIndex === 0 ? 'bg-blue-50 border-blue-200 text-blue-600 font-semibold' : isSelected ? 'bg-blue-50/40 border-blue-100/50 text-blue-500 font-semibold' : 'bg-white border-transparent hover:bg-slate-100/70 text-slate-600'}`}
         >
           <span className="text-sm flex items-center gap-1.5">
             <span>{emoji}</span> {node.name}
           </span>
         </div>
+        
+        {/* Render sub-geoms nested under body if there are multiple geoms */}
+        {node.geoms && node.geoms.length > 1 && node.geoms.map((g: any, idx: number) => {
+          const isGeomSelected = isSelected && activeGeomIndex === idx;
+          let subEmoji = '🔹';
+          if (g.type === 'cylinder') subEmoji = '🛢️';
+          else if (g.type === 'box') subEmoji = '📦';
+          else if (g.type === 'sphere') subEmoji = '🟢';
+          
+          return (
+            <div 
+              key={`${node.id}-geom-${idx}`}
+              onClick={() => {
+                setSelectedNodeId(node.id);
+                setActiveGeomIndex(idx);
+                setIsLeftSidebarOpen(false);
+              }}
+              style={{ paddingLeft: `${(depth + 1) * 14 + 8}px` }}
+              className={`flex items-center px-2 py-1 rounded-md border border-dotted cursor-pointer transition-colors shadow-sm mb-0.5 text-xs ${isGeomSelected ? 'bg-indigo-50 border-indigo-200 text-indigo-600 font-semibold' : 'bg-white/80 border-transparent hover:bg-slate-50 text-slate-500'}`}
+            >
+              <span className="flex items-center gap-1.5">
+                <span>{subEmoji}</span> {g.name || `Geom ${idx + 1}`}
+              </span>
+            </div>
+          );
+        })}
+
         {node.children && node.children.map((child: any) => renderHierarchyNode(child, depth + 1))}
       </div>
     );
-  }, [selectedNodeId, setSelectedNodeId, findNodeById, setIsLeftSidebarOpen]);
+  }, [selectedNodeId, setSelectedNodeId, findNodeById, setIsLeftSidebarOpen, activeGeomIndex, setActiveGeomIndex]);
 
   useMCPBridge();
 
@@ -2484,13 +2553,21 @@ function App() {
               {/* Damping, Limits, and Actuator Target Speed properties */}
               {selectedNode.joints?.map((joint: any, i: number) => (
                 <div key={`joint-${i}`} className="flex flex-col gap-4">
-                  {joint.damping !== undefined && (
+                  {(joint.damping !== undefined || joint.type === 'free') && (
                     <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
                       <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center gap-1.5">
                         <span>🔗 Joint Damping</span>
                       </h3>
-                      <label className="text-xs font-medium text-slate-500 flex justify-between">Damping <span>{joint.damping}</span></label>
-                      <input type="range" min="0" max="500" step="0.1" value={joint.damping} onChange={(e) => updateNodeJoint(selectedNode.id, {damping: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
+                      <label className="text-xs font-medium text-slate-500 flex justify-between">Damping <span>{(joint.damping !== undefined ? joint.damping : 0.0).toFixed(2)}</span></label>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max={joint.type === 'free' ? "5.0" : "500"} 
+                        step={joint.type === 'free' ? "0.01" : "0.1"} 
+                        value={joint.damping !== undefined ? joint.damping : 0.0} 
+                        onChange={(e) => updateNodeJoint(selectedNode.id, {damping: parseFloat(e.target.value)})} 
+                        className="w-full accent-blue-500 cursor-pointer" 
+                      />
                     </div>
                   )}
 
@@ -2644,151 +2721,91 @@ function App() {
 
               {/* Dimensions Resizing and Color Properties */}
               {(() => {
-                const geom = selectedNode.geoms?.find((g: any) => g.type === 'sphere' || g.type === 'box' || g.type === 'cylinder') || selectedNode.geoms?.[0];
+                if (!selectedNode.geoms || selectedNode.geoms.length === 0) return null;
+                const activeIndex = (activeGeomIndex >= 0 && activeGeomIndex < selectedNode.geoms.length) ? activeGeomIndex : 0;
+                const geom = selectedNode.geoms[activeIndex];
                 if (!geom) return null;
                 const hasMeshGeom = selectedNode.geoms?.some((g: any) => g.type === 'mesh');
                 return (
                   <div key="geom-properties" className="flex flex-col gap-4">
-                  {!selectedNode.id.includes('gear') && (
-                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
-                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2">📏 Resize Component</h3>
-
-                      {hasMeshGeom && (
-                        <div className="flex flex-col gap-2">
-                          <label className="text-xs font-medium text-slate-500 flex justify-between">
-                            Uniform Scale <span>scales all sub-geoms together</span>
-                          </label>
-                          <input
-                            type="range"
-                            min="0.1"
-                            max="3.0"
-                            step="0.05"
-                            defaultValue="1.0"
-                            onMouseUp={(e) => {
-                              const scale = parseFloat((e.target as HTMLInputElement).value);
-                              (e.target as HTMLInputElement).value = '1.0';
-                              const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
-                              const find = (nodes: any[]): any => {
-                                for (const n of nodes) {
-                                  if (n.id === selectedNode.id) return n;
-                                  const c = find(n.children);
-                                  if (c) return c;
-                                }
-                                return null;
-                              };
-                              const node = find(newScene.nodes);
-                              if (!node) return;
-                              // Scale this node and all children recursively
-                              const scaleNode = (n: any) => {
-                                scaleMeshGeoms(n, scale);
-                                for (const g of n.geoms) {
-                                  if (g.type === 'mesh') continue;
-                                  if (g.size) g.size = g.size.map((s: number) => s * scale);
-                                  if (g.pos) g.pos = g.pos.map((p: number) => p * scale);
-                                  if (g.fromto) g.fromto = g.fromto.map((f: number) => f * scale);
-                                }
-                                // Scale child body pos offsets too
-                                for (const child of (n.children || [])) {
-                                  if (child.pos) child.pos = child.pos.map((p: number) => p * scale);
-                                  scaleNode(child);
-                                }
-                              };
-                              scaleNode(node);
-                              useStore.getState().updateScene(newScene);
-                            }}
-                            className="w-full accent-violet-500 cursor-pointer"
-                          />
-                          <p className="text-[10px] text-slate-400">Slider resets to 1× after release — each drag applies multiplicative scale to all sub-geoms.</p>
+                    {/* Sub-Geometry dropdown selector if there are multiple geoms */}
+                    {selectedNode.geoms.length > 1 && (
+                      <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
+                        <label className="text-xs font-semibold text-slate-600">Select Sub-Geometry</label>
+                        <select
+                          value={activeIndex}
+                          onChange={(e) => setActiveGeomIndex(parseInt(e.target.value))}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded text-xs bg-white text-slate-700 outline-none focus:border-blue-500 cursor-pointer font-medium"
+                        >
+                          {selectedNode.geoms.map((g: any, idx: number) => (
+                            <option key={idx} value={idx}>
+                              {g.name || `Geom ${idx + 1}`} ({g.type})
+                            </option>
+                          ))}
+                        </select>
+                        <div className="text-[10px] text-slate-400 font-semibold px-0.5 flex justify-between uppercase tracking-wider">
+                          <span>Type: {geom.type}</span>
+                          {geom.name && <span>Name: {geom.name}</span>}
                         </div>
-                      )}
-                      
-                      {geom.type === 'sphere' && (
-                        <div className="flex flex-col gap-2">
-                          <label className="text-xs font-medium text-slate-500 flex justify-between">Radius <span>{geom.size[0].toFixed(2)} m</span></label>
-                          <input 
-                            type="range" 
-                            min="0.05" 
-                            max="2.0" 
-                            step="0.01" 
-                            value={geom.size[0]} 
-                            onChange={(e) => {
-                              const r = parseFloat(e.target.value);
-                              updateNodeGeom(selectedNode.id, { size: [r] });
-                            }}
-                            className="w-full accent-blue-500 cursor-pointer" 
-                          />
-                        </div>
-                      )}
+                      </div>
+                    )}
 
-                      {geom.type === 'box' && selectedNode.isWedge && (
-                        <div className="flex flex-col gap-3">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Base Width (X) <span>{(selectedNode.width || 2.0).toFixed(2)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.5" 
-                              max="5.0" 
-                              step="0.05" 
-                              value={selectedNode.width || 2.0} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateWedgeParams(selectedNode.id, { width: val });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Depth (Y) <span>{(selectedNode.depth || 1.0).toFixed(2)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.2" 
-                              max="4.0" 
-                              step="0.05" 
-                              value={selectedNode.depth || 1.0} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateWedgeParams(selectedNode.id, { depth: val });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Height (Z) <span>{(selectedNode.height || 0.5).toFixed(2)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.1" 
-                              max="3.0" 
-                              step="0.05" 
-                              value={selectedNode.height || 0.5} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateWedgeParams(selectedNode.id, { height: val });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1 border-t border-slate-100 pt-2">
-                            <label className="text-xs font-medium text-slate-600 flex justify-between">Wedge Angle <span>{(selectedNode.wedgeAngle !== undefined ? selectedNode.wedgeAngle : 14.036).toFixed(1)}°</span></label>
-                            <input 
-                              type="range" 
-                              min="2" 
-                              max="85" 
-                              step="1" 
-                              value={selectedNode.wedgeAngle !== undefined ? selectedNode.wedgeAngle : 14.036} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateWedgeParams(selectedNode.id, { wedgeAngle: val });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                        </div>
-                      )}
+                    {!selectedNode.id.includes('gear') && (
+                      <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                        <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2">📏 Resize Component</h3>
 
-                      {geom.type === 'box' && !selectedNode.isWedge && (
-                        <div className="flex flex-col gap-3">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Width (X) <span>{geom.size[0].toFixed(2)} m</span></label>
+                        {hasMeshGeom && (
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs font-medium text-slate-500 flex justify-between">
+                              Uniform Scale <span>scales all sub-geoms together</span>
+                            </label>
+                            <input
+                              type="range"
+                              min="0.1"
+                              max="3.0"
+                              step="0.05"
+                              defaultValue="1.0"
+                              onMouseUp={(e) => {
+                                const scale = parseFloat((e.target as HTMLInputElement).value);
+                                (e.target as HTMLInputElement).value = '1.0';
+                                const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
+                                const find = (nodes: any[]): any => {
+                                  for (const n of nodes) {
+                                    if (n.id === selectedNode.id) return n;
+                                    const c = find(n.children);
+                                    if (c) return c;
+                                  }
+                                  return null;
+                                };
+                                const node = find(newScene.nodes);
+                                if (!node) return;
+                                // Scale this node and all children recursively
+                                const scaleNode = (n: any) => {
+                                  scaleMeshGeoms(n, scale);
+                                  for (const g of n.geoms) {
+                                    if (g.type === 'mesh') continue;
+                                    if (g.size) g.size = g.size.map((s: number) => s * scale);
+                                    if (g.pos) g.pos = g.pos.map((p: number) => p * scale);
+                                    if (g.fromto) g.fromto = g.fromto.map((f: number) => f * scale);
+                                  }
+                                  // Scale child body pos offsets too
+                                  for (const child of (n.children || [])) {
+                                    if (child.pos) child.pos = child.pos.map((p: number) => p * scale);
+                                    scaleNode(child);
+                                  }
+                                };
+                                scaleNode(node);
+                                useStore.getState().updateScene(newScene);
+                              }}
+                              className="w-full accent-violet-500 cursor-pointer"
+                            />
+                            <p className="text-[10px] text-slate-400">Slider resets to 1× after release — each drag applies multiplicative scale to all sub-geoms.</p>
+                          </div>
+                        )}
+                        
+                        {geom.type === 'sphere' && (
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs font-medium text-slate-500 flex justify-between">Radius <span>{geom.size[0].toFixed(2)} m</span></label>
                             <input 
                               type="range" 
                               min="0.05" 
@@ -2796,261 +2813,306 @@ function App() {
                               step="0.01" 
                               value={geom.size[0]} 
                               onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateNodeGeom(selectedNode.id, { size: [val, geom.size[1], geom.size[2]] });
+                                const r = parseFloat(e.target.value);
+                                updateNodeGeom(selectedNode.id, { size: [r] }, activeIndex);
                               }}
                               className="w-full accent-blue-500 cursor-pointer" 
                             />
                           </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Depth (Y) <span>{geom.size[1].toFixed(2)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.05" 
-                              max="2.0" 
-                              step="0.01" 
-                              value={geom.size[1]} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateNodeGeom(selectedNode.id, { size: [geom.size[0], val, geom.size[2]] });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Height (Z) <span>{geom.size[2].toFixed(2)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.05" 
-                              max="2.0" 
-                              step="0.01" 
-                              value={geom.size[2]} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateNodeGeom(selectedNode.id, { size: [geom.size[0], geom.size[1], val] });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                        </div>
-                      )}
+                        )}
 
-                      {(geom.type === 'capsule' || geom.type === 'cylinder') && !selectedNode.isPulleyWheel && (
-                        <div className="flex flex-col gap-3">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-slate-500 flex justify-between">Radius <span>{geom.size[0].toFixed(3)} m</span></label>
-                            <input 
-                              type="range" 
-                              min="0.01" 
-                              max="0.8" 
-                              step="0.005" 
-                              value={geom.size[0]} 
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                updateNodeGeom(selectedNode.id, { 
-                                  size: geom.size[1] !== undefined ? [val, geom.size[1]] : [val] 
-                                });
-                              }}
-                              className="w-full accent-blue-500 cursor-pointer" 
-                            />
-                          </div>
-                          {geom.size[1] !== undefined && (
+                        {geom.type === 'box' && selectedNode.isWedge && (
+                          <div className="flex flex-col gap-3">
                             <div className="flex flex-col gap-1">
-                              <label className="text-xs font-medium text-slate-500 flex justify-between">Length (Half-Height) <span>{geom.size[1].toFixed(2)} m</span></label>
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Base Width (X) <span>{(selectedNode.width || 2.0).toFixed(2)} m</span></label>
                               <input 
                                 type="range" 
-                                min="0.05" 
-                                max="3.0" 
-                                step="0.01" 
-                                value={geom.size[1]} 
+                                min="0.5" 
+                                max="5.0" 
+                                step="0.05" 
+                                value={selectedNode.width || 2.0} 
                                 onChange={(e) => {
                                   const val = parseFloat(e.target.value);
-                                  updateNodeGeom(selectedNode.id, { size: [geom.size[0], val] });
+                                  updateWedgeParams(selectedNode.id, { width: val });
                                 }}
                                 className="w-full accent-blue-500 cursor-pointer" 
                               />
                             </div>
-                          )}
-                          {geom.fromto !== undefined && (() => {
-                            const dirX = geom.fromto[3] - geom.fromto[0];
-                            const dirY = geom.fromto[4] - geom.fromto[1];
-                            const dirZ = geom.fromto[5] - geom.fromto[2];
-                            const currentLength = Math.sqrt(dirX*dirX + dirY*dirY + dirZ*dirZ) || 1.0;
-                            
-                            return (
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Depth (Y) <span>{(selectedNode.depth || 1.0).toFixed(2)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.2" 
+                                max="4.0" 
+                                step="0.05" 
+                                value={selectedNode.depth || 1.0} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateWedgeParams(selectedNode.id, { depth: val });
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Height (Z) <span>{(selectedNode.height || 0.5).toFixed(2)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.1" 
+                                max="3.0" 
+                                step="0.05" 
+                                value={selectedNode.height || 0.5} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateWedgeParams(selectedNode.id, { height: val });
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1 border-t border-slate-100 pt-2">
+                              <label className="text-xs font-medium text-slate-600 flex justify-between">Wedge Angle <span>{(selectedNode.wedgeAngle !== undefined ? selectedNode.wedgeAngle : 14.036).toFixed(1)}°</span></label>
+                              <input 
+                                type="range" 
+                                min="2" 
+                                max="85" 
+                                step="1" 
+                                value={selectedNode.wedgeAngle !== undefined ? selectedNode.wedgeAngle : 14.036} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateWedgeParams(selectedNode.id, { wedgeAngle: val });
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {geom.type === 'box' && !selectedNode.isWedge && (
+                          <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Width (X) <span>{geom.size[0].toFixed(2)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.05" 
+                                max="2.0" 
+                                step="0.01" 
+                                value={geom.size[0]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { size: [val, geom.size[1], geom.size[2]] }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Depth (Y) <span>{geom.size[1].toFixed(2)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.05" 
+                                max="2.0" 
+                                step="0.01" 
+                                value={geom.size[1]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { size: [geom.size[0], val, geom.size[2]] }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Height (Z) <span>{geom.size[2].toFixed(2)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.05" 
+                                max="2.0" 
+                                step="0.01" 
+                                value={geom.size[2]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { size: [geom.size[0], geom.size[1], val] }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {(geom.type === 'capsule' || geom.type === 'cylinder') && !selectedNode.isPulleyWheel && (
+                          <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Radius <span>{geom.size[0].toFixed(3)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="0.01" 
+                                max="0.8" 
+                                step="0.005" 
+                                value={geom.size[0]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { 
+                                    size: geom.size[1] !== undefined ? [val, geom.size[1]] : [val] 
+                                  }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            {geom.size[1] !== undefined && (
                               <div className="flex flex-col gap-1">
-                                <label className="text-xs font-medium text-slate-500 flex justify-between">
-                                  Length (Segment) <span>{currentLength.toFixed(2)} m</span>
-                                </label>
+                                <label className="text-xs font-medium text-slate-500 flex justify-between">Length (Half-Height) <span>{geom.size[1].toFixed(2)} m</span></label>
                                 <input 
                                   type="range" 
-                                  min="0.1" 
-                                  max="5.0" 
-                                  step="0.05" 
-                                  value={currentLength} 
+                                  min="0.05" 
+                                  max="3.0" 
+                                  step="0.01" 
+                                  value={geom.size[1]} 
                                   onChange={(e) => {
-                                    const newVal = parseFloat(e.target.value);
-                                    const scale = newVal / currentLength;
-                                    const newFromto = [
-                                      geom.fromto[0],
-                                      geom.fromto[1],
-                                      geom.fromto[2],
-                                      geom.fromto[0] + dirX * scale,
-                                      geom.fromto[1] + dirY * scale,
-                                      geom.fromto[2] + dirZ * scale
-                                    ];
-                                    updateNodeGeom(selectedNode.id, { fromto: newFromto });
+                                    const val = parseFloat(e.target.value);
+                                    updateNodeGeom(selectedNode.id, { size: [geom.size[0], val] }, activeIndex);
                                   }}
                                   className="w-full accent-blue-500 cursor-pointer" 
                                 />
                               </div>
-                            );
-                          })()}
+                            )}
+                            {geom.fromto !== undefined && (() => {
+                              const dirX = geom.fromto[3] - geom.fromto[0];
+                              const dirY = geom.fromto[4] - geom.fromto[1];
+                              const dirZ = geom.fromto[5] - geom.fromto[2];
+                              const currentLength = Math.sqrt(dirX*dirX + dirY*dirY + dirZ*dirZ) || 1.0;
+                              
+                              return (
+                                <div className="flex flex-col gap-1">
+                                  <label className="text-xs font-medium text-slate-500 flex justify-between">
+                                    Length (Segment) <span>{currentLength.toFixed(2)} m</span>
+                                  </label>
+                                  <input 
+                                    type="range" 
+                                    min="0.1" 
+                                    max="5.0" 
+                                    step="0.05" 
+                                    value={currentLength} 
+                                    onChange={(e) => {
+                                      const newVal = parseFloat(e.target.value);
+                                      const scale = newVal / currentLength;
+                                      const newFromto = [
+                                        geom.fromto[0],
+                                        geom.fromto[1],
+                                        geom.fromto[2],
+                                        geom.fromto[0] + dirX * scale,
+                                        geom.fromto[1] + dirY * scale,
+                                        geom.fromto[2] + dirZ * scale
+                                      ];
+                                      updateNodeGeom(selectedNode.id, { fromto: newFromto }, activeIndex);
+                                    }}
+                                    className="w-full accent-blue-500 cursor-pointer" 
+                                  />
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Position Offset Control for Sub-Geom */}
+                    {(() => {
+                      const pos = geom.pos || [0, 0, 0];
+                      return (
+                        <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                          <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2">📍 Geom Position Offset</h3>
+                          <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">X Offset <span>{pos[0].toFixed(3)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="-1.0" 
+                                max="1.0" 
+                                step="0.005" 
+                                value={pos[0]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { pos: [val, pos[1], pos[2]] }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Y Offset <span>{pos[1].toFixed(3)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="-1.0" 
+                                max="1.0" 
+                                step="0.005" 
+                                value={pos[1]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { pos: [pos[0], val, pos[2]] }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-xs font-medium text-slate-500 flex justify-between">Z Offset <span>{pos[2].toFixed(3)} m</span></label>
+                              <input 
+                                type="range" 
+                                min="-1.0" 
+                                max="1.0" 
+                                step="0.005" 
+                                value={pos[2]} 
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  updateNodeGeom(selectedNode.id, { pos: [pos[0], pos[1], val] }, activeIndex);
+                                }}
+                                className="w-full accent-blue-500 cursor-pointer" 
+                              />
+                            </div>
+                          </div>
                         </div>
-                      )}
+                      );
+                    })()}
+
+                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
+                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">Mass</h3>
+                      <label className="text-xs font-medium text-slate-500 flex justify-between">Value <span>{geom.mass} kg</span></label>
+                      <input type="range" min="0" max="50" step="0.01" value={geom.mass} onChange={(e) => updateNodeGeom(selectedNode.id, {mass: parseFloat(e.target.value)}, activeIndex)} className="w-full accent-blue-500 cursor-pointer" />
                     </div>
-                  )}
 
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
-                    <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">Mass</h3>
-                    <label className="text-xs font-medium text-slate-500 flex justify-between">Value <span>{geom.mass} kg</span></label>
-                    <input type="range" min="0" max="50" step="0.01" value={geom.mass} onChange={(e) => updateNodeGeom(selectedNode.id, {mass: parseFloat(e.target.value)})} className="w-full accent-blue-500 cursor-pointer" />
-                  </div>
-
-                   <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
-                    <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
-                      <span className="flex items-center gap-1">💥 Collision Physics</span>
-                      <button 
-                        onClick={() => {
-                          setDocsTab('collision');
-                          setIsDocsOpen(true);
-                        }} 
-                        className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
-                        title="Click for documentation"
-                      >
-                        <Info className="w-3.5 h-3.5" />
-                      </button>
-                    </h3>
-                    <label className="text-xs font-semibold text-slate-500 flex items-center gap-2 cursor-pointer py-1">
-                      <input 
-                        type="checkbox" 
-                        checked={geom.contype !== 0 && geom.conaffinity !== 0}
-                        onChange={(e) => {
-                          const enabled = e.target.checked;
-                          updateNodeGeom(selectedNode.id, {
-                            contype: enabled ? 1 : 0,
-                            conaffinity: enabled ? 1 : 0
-                          });
-                        }}
-                        className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
-                      />
-                      Enable Collisions
-                    </label>
-                  </div>
-
-                  {/* Material Properties Card */}
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
-                    <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
-                      <span className="flex items-center gap-1">🧪 Physical Material</span>
-                      <button 
-                        onClick={() => {
-                          setDocsTab('friction');
-                          setIsDocsOpen(true);
-                        }} 
-                        className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
-                        title="Click for documentation"
-                      >
-                        <Info className="w-3.5 h-3.5" />
-                      </button>
-                    </h3>
-
-                    {/* Bounciness (Restitution) Slider */}
-                    {(() => {
-                      const currentBounce = (() => {
-                        if (!geom.solref) return 0.0;
-                        if (geom.solref[0] >= 0) return 0.0;
-                        const damping = -geom.solref[1];
-                        if (damping >= 50) return 0.0;
-                        const b = Math.exp(-damping / 20);
-                        return Math.min(0.99, Math.max(0.0, b));
-                      })();
-                      return (
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-xs font-semibold text-slate-500 flex justify-between">
-                            Bounciness (Bounce)
-                            <span className="text-blue-600 font-bold">{currentBounce.toFixed(2)}</span>
-                          </label>
-                          <input 
-                            type="range" 
-                            min="0.0" 
-                            max="0.99" 
-                            step="0.01" 
-                            className="w-full accent-blue-500 cursor-pointer" 
-                            value={currentBounce} 
-                            onChange={(e) => {
-                              const bounce = parseFloat(e.target.value);
-                              if (bounce > 0) {
-                                const damping = -20 * Math.log(bounce);
-                                const stiffness = bounce > 0.95 ? -1000 - (bounce - 0.95) * 475000 : -1000;
-                                updateNodeGeom(selectedNode.id, {
-                                  solref: [stiffness, -damping],
-                                  solimp: [0.99, 0.99, 0.001, 0.5, 2]
-                                });
-                              } else {
-                                // Omit or reset solref/solimp
-                                const updatedGeom = { ...geom };
-                                delete updatedGeom.solref;
-                                delete updatedGeom.solimp;
-                                updateNodeGeom(selectedNode.id, updatedGeom);
-                              }
-                            }}
-                          />
-                          <span className="text-[10px] text-slate-400 leading-tight">
-                            Controls elastic bounce restitution (elastic limit is 0.99).
-                          </span>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Friction Slider */}
-                    {(() => {
-                      const currentFriction = geom.friction ? geom.friction[0] : 0.7;
-                      return (
-                        <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
-                          <label className="text-xs font-semibold text-slate-500 flex justify-between">
-                            Sliding Friction
-                            <span className="text-blue-600 font-bold">{currentFriction.toFixed(2)}</span>
-                          </label>
-                          <input 
-                            type="range" 
-                            min="0.0" 
-                            max="1.5" 
-                            step="0.05" 
-                            className="w-full accent-blue-500 cursor-pointer" 
-                            value={currentFriction} 
-                            onChange={(e) => {
-                              const f = parseFloat(e.target.value);
-                              updateNodeGeom(selectedNode.id, {
-                                friction: [f, 0.005, 0.0001]
-                              });
-                            }}
-                          />
-                          <span className="text-[10px] text-slate-400 leading-tight">
-                            Low friction makes it slippery like ice. High friction creates rubbery resistance.
-                          </span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Joint Mechanical Coupling Configuration */}
-                  {selectedNode.joints && selectedNode.joints.length > 0 && (
-                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2.5">
+                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
                       <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
-                        <span className="flex items-center gap-1">⚙️ Mechanical Coupling</span>
+                        <span className="flex items-center gap-1">💥 Collision Physics</span>
                         <button 
                           onClick={() => {
-                            setDocsTab('coupling');
+                            setDocsTab('collision');
+                            setIsDocsOpen(true);
+                          }} 
+                          className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
+                          title="Click for documentation"
+                        >
+                          <Info className="w-3.5 h-3.5" />
+                        </button>
+                      </h3>
+                      <label className="text-xs font-semibold text-slate-500 flex items-center gap-2 cursor-pointer py-1">
+                        <input 
+                          type="checkbox" 
+                          checked={geom.contype !== 0 && geom.conaffinity !== 0}
+                          onChange={(e) => {
+                            const enabled = e.target.checked;
+                            updateNodeGeom(selectedNode.id, {
+                              contype: enabled ? 1 : 0,
+                              conaffinity: enabled ? 1 : 0
+                            }, activeIndex);
+                          }}
+                          className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
+                        />
+                        Enable Collisions
+                      </label>
+                    </div>
+
+                    {/* Material Properties Card */}
+                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
+                        <span className="flex items-center gap-1">🧪 Physical Material</span>
+                        <button 
+                          onClick={() => {
+                            setDocsTab('friction');
                             setIsDocsOpen(true);
                           }} 
                           className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
@@ -3060,179 +3122,276 @@ function App() {
                         </button>
                       </h3>
 
-                      <label className="text-xs font-semibold text-slate-500 flex items-center gap-2 cursor-pointer py-1">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedNode.allowCoupling !== false}
-                          onChange={(e) => {
-                            const enabled = e.target.checked;
-                            const newScene = JSON.parse(JSON.stringify(sceneGraph));
-                            const traverse = (nodes: any[]) => {
-                              if (!nodes) return false;
-                              for (const node of nodes) {
-                                if (node.id === selectedNode.id) {
-                                  node.allowCoupling = enabled;
-                                  return true;
-                                }
-                                if (traverse(node.children)) return true;
-                              }
-                              return false;
-                            };
-                            traverse(newScene.nodes);
-                            updateScene(newScene);
-                          }}
-                          className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
-                        />
-                        Enable Coupling
-                      </label>
-
-                      {selectedNode.allowCoupling !== false && (() => {
-                        // Gather list of other jointed nodes in the scene
-                        const list: SceneNode[] = [];
-                        const traverse = (items: SceneNode[]) => {
-                          for (const item of items) {
-                            if (item.id !== selectedNode.id && item.joints && item.joints.length > 0) {
-                              list.push(item);
-                            }
-                            if (item.children) {
-                              traverse(item.children);
-                            }
-                          }
-                        };
-                        traverse(sceneGraph.nodes);
-
+                      {/* Bounciness (Restitution) Slider */}
+                      {(() => {
+                        const currentBounce = (() => {
+                          if (!geom.solref) return 0.0;
+                          if (geom.solref[0] >= 0) return 0.0;
+                          const damping = -geom.solref[1];
+                          if (damping >= 50) return 0.0;
+                          const b = Math.exp(-damping / 20);
+                          return Math.min(0.99, Math.max(0.0, b));
+                        })();
                         return (
-                          <div className="flex flex-col gap-2 mt-1 border-t border-slate-100 pt-2">
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Couple Target Component</span>
-                              <select
-                                value={selectedNode.coupleTargetId || ''}
-                                onChange={(e) => {
-                                  const val = e.target.value || undefined;
-                                  const newScene = JSON.parse(JSON.stringify(sceneGraph));
-                                  const traverse2 = (nodes: any[]) => {
-                                    if (!nodes) return false;
-                                    for (const node of nodes) {
-                                      if (node.id === selectedNode.id) {
-                                        node.coupleTargetId = val;
-                                        // Default ratio depending on type if target selected and no custom ratio set
-                                        if (val && node.coupleRatio === undefined) {
-                                          node.coupleRatio = val.includes('rack') || selectedNode.id.includes('rack') ? 0.2 : -1.0;
-                                        }
-                                        return true;
-                                      }
-                                      if (traverse2(node.children)) return true;
-                                    }
-                                    return false;
-                                  };
-                                  traverse2(newScene.nodes);
-                                  updateScene(newScene);
-                                }}
-                                className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs bg-white text-slate-700 outline-none focus:border-blue-500 cursor-pointer"
-                              >
-                                <option value="">[Auto Proximity Fallback]</option>
-                                {list.map(node => (
-                                  <option key={node.id} value={node.id}>
-                                    {node.name || node.id} ({node.joints[0].type})
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
+                          <div className="flex flex-col gap-1.5">
+                            <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                              Bounciness (Bounce)
+                              <span className="text-blue-600 font-bold">{currentBounce.toFixed(2)}</span>
+                            </label>
+                            <input 
+                              type="range" 
+                              min="0.0" 
+                              max="0.99" 
+                              step="0.01" 
+                              className="w-full accent-blue-500 cursor-pointer" 
+                              value={currentBounce} 
+                              onChange={(e) => {
+                                const bounce = parseFloat(e.target.value);
+                                if (bounce > 0) {
+                                  const damping = -20 * Math.log(bounce);
+                                  const stiffness = bounce > 0.95 ? -1000 - (bounce - 0.95) * 475000 : -1000;
+                                  updateNodeGeom(selectedNode.id, {
+                                    solref: [stiffness, -damping],
+                                    solimp: [0.99, 0.99, 0.001, 0.5, 2]
+                                  }, activeIndex);
+                                } else {
+                                  // Omit or reset solref/solimp
+                                  const updatedGeom = { ...geom };
+                                  delete updatedGeom.solref;
+                                  delete updatedGeom.solimp;
+                                  updateNodeGeom(selectedNode.id, updatedGeom, activeIndex);
+                                }
+                              }}
+                            />
+                            <span className="text-[10px] text-slate-400 leading-tight">
+                              Controls elastic bounce restitution (elastic limit is 0.99).
+                            </span>
+                          </div>
+                        );
+                      })()}
 
-                            {selectedNode.coupleTargetId && (
-                              <div className="flex flex-col gap-1">
-                                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Coupling Ratio</span>
-                                <div className="flex gap-1.5 items-center">
-                                  <select
-                                    value={
-                                      selectedNode.coupleRatio === -1.0 ? 'gear' :
-                                      selectedNode.coupleRatio === 0.2 ? 'pinion_rack' :
-                                      selectedNode.coupleRatio === 1.0 ? 'direct' :
-                                      'custom'
-                                    }
-                                    onChange={(e) => {
-                                      const type = e.target.value;
-                                      let ratio = -1.0;
-                                      if (type === 'gear') ratio = -1.0;
-                                      else if (type === 'pinion_rack') ratio = 0.2;
-                                      else if (type === 'direct') ratio = 1.0;
-                                      else ratio = selectedNode.coupleRatio !== undefined ? selectedNode.coupleRatio : -1.0;
-
-                                      const newScene = JSON.parse(JSON.stringify(sceneGraph));
-                                      const traverse2 = (nodes: any[]) => {
-                                        if (!nodes) return false;
-                                        for (const node of nodes) {
-                                          if (node.id === selectedNode.id) {
-                                            node.coupleRatio = ratio;
-                                            return true;
-                                          }
-                                          if (traverse2(node.children)) return true;
-                                        }
-                                        return false;
-                                      };
-                                      traverse2(newScene.nodes);
-                                      updateScene(newScene);
-                                    }}
-                                    className="px-2 py-1.5 border border-slate-200 rounded text-xs bg-white text-slate-700 outline-none focus:border-blue-500 cursor-pointer flex-1"
-                                  >
-                                    <option value="gear">Gears meshing (-1.0)</option>
-                                    <option value="pinion_rack">Rack & Pinion (0.2)</option>
-                                    <option value="direct">Direct link (1.0)</option>
-                                    <option value="custom">Custom Ratio...</option>
-                                  </select>
-
-                                  <input
-                                    type="number"
-                                    step="0.05"
-                                    value={selectedNode.coupleRatio !== undefined ? selectedNode.coupleRatio : -1.0}
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value);
-                                      if (isNaN(val)) return;
-                                      const newScene = JSON.parse(JSON.stringify(sceneGraph));
-                                      const traverse2 = (nodes: any[]) => {
-                                        if (!nodes) return false;
-                                        for (const node of nodes) {
-                                          if (node.id === selectedNode.id) {
-                                            node.coupleRatio = val;
-                                            return true;
-                                          }
-                                          if (traverse2(node.children)) return true;
-                                        }
-                                        return false;
-                                      };
-                                      traverse2(newScene.nodes);
-                                      updateScene(newScene);
-                                    }}
-                                    className="w-16 px-1.5 py-1.5 border border-slate-200 rounded text-xs text-center font-mono outline-none focus:border-blue-500"
-                                    title="Custom gear coupling ratio"
-                                  />
-                                </div>
-                              </div>
-                            )}
+                      {/* Friction Slider */}
+                      {(() => {
+                        const currentFriction = geom.friction ? geom.friction[0] : 0.7;
+                        return (
+                          <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
+                            <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                              Sliding Friction
+                              <span className="text-blue-600 font-bold">{currentFriction.toFixed(2)}</span>
+                            </label>
+                            <input 
+                              type="range" 
+                              min="0.0" 
+                              max="1.5" 
+                              step="0.05" 
+                              className="w-full accent-blue-500 cursor-pointer" 
+                              value={currentFriction} 
+                              onChange={(e) => {
+                                const f = parseFloat(e.target.value);
+                                updateNodeGeom(selectedNode.id, {
+                                  friction: [f, 0.005, 0.0001]
+                                }, activeIndex);
+                              }}
+                            />
+                            <span className="text-[10px] text-slate-400 leading-tight">
+                              Low friction makes it slippery like ice. High friction creates rubbery resistance.
+                            </span>
                           </div>
                         );
                       })()}
                     </div>
-                  )}
-                  <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
-                    <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">Appearance</h3>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-500">Color (RGB)</span>
-                      <input type="color" value={`#${Math.floor(geom.rgba[0]*255).toString(16).padStart(2,'0')}${Math.floor(geom.rgba[1]*255).toString(16).padStart(2,'0')}${Math.floor(geom.rgba[2]*255).toString(16).padStart(2,'0')}`} 
-                        onChange={(e) => {
-                          const hex = e.target.value;
-                          const r = parseInt(hex.slice(1,3), 16)/255;
-                          const g = parseInt(hex.slice(3,5), 16)/255;
-                          const b = parseInt(hex.slice(5,7), 16)/255;
-                          updateNodeGeom(selectedNode.id, {rgba: [r,g,b,1]});
-                        }} 
-                        className="w-8 h-8 rounded cursor-pointer border-0 p-0 shadow-sm" 
-                      />
+
+                    {/* Joint Mechanical Coupling Configuration */}
+                    {selectedNode.joints && selectedNode.joints.length > 0 && (
+                      <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2.5">
+                        <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
+                          <span className="flex items-center gap-1">⚙️ Mechanical Coupling</span>
+                          <button 
+                            onClick={() => {
+                              setDocsTab('coupling');
+                              setIsDocsOpen(true);
+                            }} 
+                            className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer" 
+                            title="Click for documentation"
+                          >
+                            <Info className="w-3.5 h-3.5" />
+                          </button>
+                        </h3>
+
+                        <label className="text-xs font-semibold text-slate-500 flex items-center gap-2 cursor-pointer py-1">
+                          <input 
+                            type="checkbox" 
+                            checked={selectedNode.allowCoupling !== false}
+                            onChange={(e) => {
+                              const enabled = e.target.checked;
+                              const newScene = JSON.parse(JSON.stringify(sceneGraph));
+                              const traverse = (nodes: any[]) => {
+                                if (!nodes) return false;
+                                for (const node of nodes) {
+                                  if (node.id === selectedNode.id) {
+                                    node.allowCoupling = enabled;
+                                    return true;
+                                  }
+                                  if (traverse(node.children)) return true;
+                                }
+                                return false;
+                              };
+                              traverse(newScene.nodes);
+                              updateScene(newScene);
+                            }}
+                            className="w-4 h-4 rounded text-blue-500 focus:ring-blue-400 accent-blue-500 cursor-pointer"
+                          />
+                          Enable Coupling
+                        </label>
+
+                        {selectedNode.allowCoupling !== false && (() => {
+                          // Gather list of other jointed nodes in the scene
+                          const list: SceneNode[] = [];
+                          const traverse = (items: SceneNode[]) => {
+                            for (const item of items) {
+                              if (item.id !== selectedNode.id && item.joints && item.joints.length > 0) {
+                                list.push(item);
+                              }
+                              if (item.children) {
+                                traverse(item.children);
+                              }
+                            }
+                          };
+                          traverse(sceneGraph.nodes);
+
+                          return (
+                            <div className="flex flex-col gap-2 mt-1 border-t border-slate-100 pt-2">
+                              <div className="flex flex-col gap-1">
+                                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Couple Target Component</span>
+                                <select
+                                  value={selectedNode.coupleTargetId || ''}
+                                  onChange={(e) => {
+                                    const val = e.target.value || undefined;
+                                    const newScene = JSON.parse(JSON.stringify(sceneGraph));
+                                    const traverse2 = (nodes: any[]) => {
+                                      if (!nodes) return false;
+                                      for (const node of nodes) {
+                                        if (node.id === selectedNode.id) {
+                                          node.coupleTargetId = val;
+                                          // Default ratio depending on type if target selected and no custom ratio set
+                                          if (val && node.coupleRatio === undefined) {
+                                            node.coupleRatio = val.includes('rack') || selectedNode.id.includes('rack') ? 0.2 : -1.0;
+                                          }
+                                          return true;
+                                        }
+                                        if (traverse2(node.children)) return true;
+                                      }
+                                      return false;
+                                    };
+                                    traverse2(newScene.nodes);
+                                    updateScene(newScene);
+                                  }}
+                                  className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs bg-white text-slate-700 outline-none focus:border-blue-500 cursor-pointer"
+                                >
+                                  <option value="">[Auto Proximity Fallback]</option>
+                                  {list.map(node => (
+                                    <option key={node.id} value={node.id}>
+                                      {node.name || node.id} ({node.joints[0].type})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {selectedNode.coupleTargetId && (
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Coupling Ratio</span>
+                                  <div className="flex gap-1.5 items-center">
+                                    <select
+                                      value={
+                                        selectedNode.coupleRatio === -1.0 ? 'gear' :
+                                        selectedNode.coupleRatio === 0.2 ? 'pinion_rack' :
+                                        selectedNode.coupleRatio === 1.0 ? 'direct' :
+                                        'custom'
+                                      }
+                                      onChange={(e) => {
+                                        const type = e.target.value;
+                                        let ratio = -1.0;
+                                        if (type === 'gear') ratio = -1.0;
+                                        else if (type === 'pinion_rack') ratio = 0.2;
+                                        else if (type === 'direct') ratio = 1.0;
+                                        else ratio = selectedNode.coupleRatio !== undefined ? selectedNode.coupleRatio : -1.0;
+
+                                        const newScene = JSON.parse(JSON.stringify(sceneGraph));
+                                        const traverse2 = (nodes: any[]) => {
+                                          if (!nodes) return false;
+                                          for (const node of nodes) {
+                                            if (node.id === selectedNode.id) {
+                                              node.coupleRatio = ratio;
+                                              return true;
+                                            }
+                                            if (traverse2(node.children)) return true;
+                                          }
+                                          return false;
+                                        };
+                                        traverse2(newScene.nodes);
+                                        updateScene(newScene);
+                                      }}
+                                      className="px-2 py-1.5 border border-slate-200 rounded text-xs bg-white text-slate-700 outline-none focus:border-blue-500 cursor-pointer flex-1"
+                                    >
+                                      <option value="gear">Gears meshing (-1.0)</option>
+                                      <option value="pinion_rack">Rack & Pinion (0.2)</option>
+                                      <option value="direct">Direct link (1.0)</option>
+                                      <option value="custom">Custom Ratio...</option>
+                                    </select>
+
+                                    <input
+                                      type="number"
+                                      step="0.05"
+                                      value={selectedNode.coupleRatio !== undefined ? selectedNode.coupleRatio : -1.0}
+                                      onChange={(e) => {
+                                        const val = parseFloat(e.target.value);
+                                        if (isNaN(val)) return;
+                                        const newScene = JSON.parse(JSON.stringify(sceneGraph));
+                                        const traverse2 = (nodes: any[]) => {
+                                          if (!nodes) return false;
+                                          for (const node of nodes) {
+                                            if (node.id === selectedNode.id) {
+                                              node.coupleRatio = val;
+                                              return true;
+                                            }
+                                            if (traverse2(node.children)) return true;
+                                          }
+                                          return false;
+                                        };
+                                        traverse2(newScene.nodes);
+                                        updateScene(newScene);
+                                      }}
+                                      className="w-16 px-1.5 py-1.5 border border-slate-200 rounded text-xs text-center font-mono outline-none focus:border-blue-500"
+                                      title="Custom gear coupling ratio"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
+                      <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1">Appearance</h3>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-500">Color (RGB)</span>
+                        <input type="color" value={`#${Math.floor(geom.rgba[0]*255).toString(16).padStart(2,'0')}${Math.floor(geom.rgba[1]*255).toString(16).padStart(2,'0')}${Math.floor(geom.rgba[2]*255).toString(16).padStart(2,'0')}`} 
+                          onChange={(e) => {
+                            const hex = e.target.value;
+                            const r = parseInt(hex.slice(1,3), 16)/255;
+                            const g = parseInt(hex.slice(3,5), 16)/255;
+                            const b = parseInt(hex.slice(5,7), 16)/255;
+                            updateNodeGeom(selectedNode.id, {rgba: [r,g,b,1]}, activeIndex);
+                          }} 
+                          className="w-8 h-8 rounded cursor-pointer border-0 p-0 shadow-sm" 
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })()}
+                );
+              })()}
 
               {/* Mesh Properties — shown when the body or any child has a mesh geom */}
               {(() => {

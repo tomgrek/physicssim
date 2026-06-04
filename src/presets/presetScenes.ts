@@ -1063,7 +1063,7 @@ export const coinFlipPreset: SceneGraph = {
       type: 'body',
       pos: [0, 0, 0.5],
       joints: [
-        { name: 'coin_free', type: 'free', initialVelocity: [0.0, 0.0, 5.0, 0.0, 15.0, 0.0] }
+        { name: 'coin_free', type: 'free', initialVelocity: [0.0, 0.0, 5.0, 0.0, 15.0, 0.0], damping: 0.1 }
       ],
       geoms: [
         {

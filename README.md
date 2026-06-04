@@ -8,8 +8,8 @@ A browser-based rigid-body physics simulator powered by MuJoCo WASM. Build, simu
 - **Primitive geoms** — box, sphere, capsule, cylinder, ellipsoid
 - **Dynamic mesh geoms** — arbitrary convex polyhedra with full collision
 - **Static mesh geoms** — visual-only scenery (decorative, no physics)
-- **Compound bodies** — multiple geoms per body for complex shapes
-- **Joints** — free, hinge, slide, ball (with stiffness/damping/limits/actuators)
+- **Compound bodies** — multiple geoms per body for complex shapes (nested and selectable directly in Hierarchy)
+- **Joints** — free (with physical damping/drag decay), hinge, slide, ball (with stiffness/damping/limits/actuators)
 - **Constraints** — gear coupling, rack-and-pinion, pulley ropes, weld, connect
 - **Aerodynamics** — lift/drag model for winged bodies
 - **Control scripts** — per-body JavaScript running at 1000 Hz (LQR, PID, custom)

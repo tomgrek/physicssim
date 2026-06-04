@@ -168,7 +168,7 @@ export interface PhysicsState {
   setSelectedNodeId: (id: string | null) => void;
   updateScene: (sceneGraph: SceneGraph) => void;
   updateNodePos: (id: string, newPos: [number, number, number]) => void;
-  updateNodeGeom: (id: string, updates: any) => void;
+  updateNodeGeom: (id: string, updates: any, geomIndex?: number) => void;
   updateNodeJoint: (id: string, updates: any) => void;
   updateGearTeeth: (id: string, teeth: number) => void;
   updateNodeRotation: (id: string, axis: 0 | 1 | 2, deg: number) => void;
@@ -431,7 +431,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     }
   },
 
-  updateNodeGeom: (id, updates) => {
+  updateNodeGeom: (id, updates, geomIndex) => {
     const newScene = JSON.parse(JSON.stringify(get().sceneGraph));
     const traverse = (nodes: any[]) => {
       if (!nodes) return false; for (const node of nodes) {
@@ -470,9 +470,13 @@ export const useStore = create<PhysicsState>()((set, get) => ({
             node.geoms = generateGearGeoms(id, newRadius, currentTeeth, newColor, isSecondGear, newContype, newConaffinity);
           } else {
             let targetGeom = node.geoms[0];
-            const mainGeom = node.geoms.find((g: any) => g.type === 'sphere' || g.type === 'box' || g.type === 'cylinder');
-            if (mainGeom) {
-              targetGeom = mainGeom;
+            if (geomIndex !== undefined && geomIndex >= 0 && geomIndex < node.geoms.length) {
+              targetGeom = node.geoms[geomIndex];
+            } else {
+              const mainGeom = node.geoms.find((g: any) => g.type === 'sphere' || g.type === 'box' || g.type === 'cylinder');
+              if (mainGeom) {
+                targetGeom = mainGeom;
+              }
             }
             if (updates.fromto && targetGeom.fromto) {
               const oldFromto = targetGeom.fromto;

@@ -34,13 +34,18 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 * **Static Bodies**: Nodes with `joints: []` have infinite mass and are welded directly to the world frame. Gravity has no effect on them.
 * **Hinge Joints**: constrained to 1D axial rotation. Symmetrical components have their center of mass exactly on the axis pivot, which yields zero gravity-torque.
 * **Free Joints**: Complete 6-DOF unconstrained movement, yielding free-fall acceleration. Their initial velocity state consists of a 6-element array `[vx, vy, vz, wx, wy, wz]`, where indices 0–2 represent linear velocity ($m/s$) and indices 3–5 represent angular velocity (Roll, Pitch, Yaw in $rad/s$). Both of these are fully adjustable in the properties panel under "Launch Velocity" and "Launch Spin".
+* **Free Joint Damping**: While standard joints are damped natively in MuJoCo, free joints do not support joint-level damping. We simulate this by applying drag forces ($F = -c \cdot m \cdot v$) and drag torques ($T = -c \cdot I \cdot \omega$) scaled by mass and principal moments of inertia respectively inside the step loop. This ensures both linear velocity and angular spin decay uniformly at the user-configured rate ($e^{-ct}$) instead of spinning decaying instantly.
 
-### 3. 💥 Solid vs Ephemeral Collisions
+### 3. 🔹 Nested Sub-Geometries & Selection
+* **Hierarchical View**: If a compound body is composed of multiple sub-geometries (`node.geoms.length > 1`), they are rendered as nested sub-nodes in the left sidebar hierarchy tree.
+* **Component Customization**: Clicking any sub-geometry in the tree highlights it in indigo, opens the properties panel on the right, and binds all controls (Dimensions, Mass, Collisions, Material, Appearance, and Position Offset) directly to that specific sub-geometry.
+
+### 4. 💥 Solid vs Ephemeral Collisions
 * Map directly to MuJoCo's `contype` and `conaffinity` attributes.
 * **Solid (Solid check active)**: `contype="1" conaffinity="1"`. Enters the contact solver.
 * **Ephemeral (Solid check inactive)**: `contype="0" conaffinity="0"`. Visual guide only; other bodies pass through freely.
 
-### 4. 🔄 3D Multi-Axis Rotation (Euler representation)
+### 5. 🔄 3D Multi-Axis Rotation (Euler representation)
 * Redesigned to accept explicit array updates along `[X, Y, Z]` axes.
 * Stale quaternion representation (`node.quat`) is deleted dynamically to let the MuJoCo compiler resolve rotation purely from the custom Euler array, preventing canvas lag or value conflicts.
 
