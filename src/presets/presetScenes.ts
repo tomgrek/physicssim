@@ -1162,8 +1162,334 @@ if (api.getTime() === 0) {
   ]
 };
 
+export const windmillPreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'tower',
+      name: 'tower',
+      type: 'body',
+      pos: [0, 0, 0],
+      joints: [],
+      geoms: [
+        { name: 'tower_base', type: 'cylinder', size: [0.2, 0.05], pos: [0, 0, 0.05], rgba: [0.7, 0.7, 0.7, 1] },
+        { name: 'tower_mast', type: 'cylinder', size: [0.06, 1.2], pos: [0, 0, 1.2], rgba: [0.9, 0.9, 0.9, 1] }
+      ],
+      children: [
+        {
+          id: 'nacelle',
+          name: 'nacelle',
+          type: 'body',
+          pos: [0, 0, 2.4],
+          joints: [
+            { name: 'yaw_hinge', type: 'hinge', axis: [0, 0, 1], damping: 20.0 }
+          ],
+          geoms: [
+            { name: 'nacelle_body', type: 'box', size: [0.25, 0.12, 0.12], rgba: [0.9, 0.9, 0.9, 1], contype: 0, conaffinity: 0 }
+          ],
+          children: [
+            {
+              id: 'tail_vane',
+              name: 'tail_vane',
+              type: 'body',
+              pos: [-0.6, 0, 0.15],
+              euler: [90, 0, 0],
+              isAerodynamic: true,
+              joints: [],
+              geoms: [
+                { name: 'vane_fin', type: 'box', size: [0.15, 0.2, 0.005], rgba: [0.85, 0.45, 0.25, 1], mass: 0.15, contype: 0, conaffinity: 0 }
+              ],
+              children: []
+            },
+            {
+              id: 'rotor',
+              name: 'rotor',
+              type: 'body',
+              pos: [0.32, 0, 0],
+              joints: [
+                { name: 'rotor_hinge', type: 'hinge', axis: [1, 0, 0], damping: 0.15 }
+              ],
+              geoms: [
+                { name: 'rotor_hub', type: 'sphere', size: [0.12], rgba: [0.85, 0.25, 0.25, 1], contype: 0, conaffinity: 0 }
+              ],
+              children: [
+                {
+                  id: 'blade1',
+                  name: 'blade1',
+                  type: 'body',
+                  pos: [0, 0, 0],
+                  euler: [0, 12, 0],
+                  isAerodynamic: true,
+                  joints: [],
+                  geoms: [
+                    { name: 'blade1_sail', type: 'box', size: [0.08, 0.6, 0.015], pos: [0, 0.8, 0], rgba: [0.95, 0.95, 0.95, 1], mass: 0.3, contype: 0, conaffinity: 0 },
+                    { name: 'blade1_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.7, 0.7, 0.7, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade2',
+                  name: 'blade2',
+                  type: 'body',
+                  pos: [0, 0, 0],
+                  euler: [120, 12, 0],
+                  isAerodynamic: true,
+                  joints: [],
+                  geoms: [
+                    { name: 'blade2_sail', type: 'box', size: [0.08, 0.6, 0.015], pos: [0, 0.8, 0], rgba: [0.95, 0.95, 0.95, 1], mass: 0.3, contype: 0, conaffinity: 0 },
+                    { name: 'blade2_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.7, 0.7, 0.7, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade3',
+                  name: 'blade3',
+                  type: 'body',
+                  pos: [0, 0, 0],
+                  euler: [240, 12, 0],
+                  isAerodynamic: true,
+                  joints: [],
+                  geoms: [
+                    { name: 'blade3_sail', type: 'box', size: [0.08, 0.6, 0.015], pos: [0, 0.8, 0], rgba: [0.95, 0.95, 0.95, 1], mass: 0.3, contype: 0, conaffinity: 0 },
+                    { name: 'blade3_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.7, 0.7, 0.7, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
+export const physicsOnlyWindmillPreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'tower',
+      name: 'tower',
+      type: 'body',
+      pos: [0, 0, 0],
+      joints: [],
+      geoms: [
+        { name: 'tower_base', type: 'cylinder', size: [0.2, 0.05], pos: [0, 0, 0.05], rgba: [0.7, 0.7, 0.7, 1] },
+        { name: 'tower_mast', type: 'cylinder', size: [0.06, 1.2], pos: [0, 0, 1.2], rgba: [0.9, 0.9, 0.9, 1] }
+      ],
+      children: [
+        {
+          id: 'nacelle',
+          name: 'nacelle',
+          type: 'body',
+          pos: [0, 0, 2.4],
+          joints: [
+            { name: 'yaw_hinge', type: 'hinge', axis: [0, 0, 1], damping: 20.0 }
+          ],
+          geoms: [
+            { name: 'nacelle_body', type: 'box', size: [0.25, 0.12, 0.12], rgba: [0.9, 0.9, 0.9, 1], contype: 0, conaffinity: 0 }
+          ],
+          children: [
+            {
+              id: 'tail_vane',
+              name: 'tail_vane',
+              type: 'body',
+              pos: [-0.6, 0, 0.15],
+              euler: [90, 0, 0],
+              joints: [],
+              geoms: [
+                { name: 'vane_fin', type: 'box', size: [0.15, 0.2, 0.005], rgba: [0.85, 0.45, 0.25, 1], mass: 0.15, contype: 0, conaffinity: 0 }
+              ],
+              children: []
+            },
+            {
+              id: 'rotor',
+              name: 'rotor',
+              type: 'body',
+              pos: [0.32, 0, 0],
+              joints: [
+                { name: 'rotor_hinge', type: 'hinge', axis: [1, 0, 0], damping: 0.15 }
+              ],
+              geoms: [
+                { name: 'rotor_hub', type: 'sphere', size: [0.12], rgba: [0.85, 0.25, 0.25, 1], contype: 0, conaffinity: 0 }
+              ],
+              children: [
+                {
+                  id: 'blade1',
+                  name: 'blade1',
+                  type: 'body',
+                  pos: [0, 0, 0],
+                  euler: [0, 12, 0],
+                  joints: [],
+                  geoms: [
+                    { name: 'blade1_sail', type: 'box', size: [0.08, 0.6, 0.015], pos: [0, 0.8, 0], rgba: [0.95, 0.95, 0.95, 1], mass: 0.3, contype: 0, conaffinity: 0 },
+                    { name: 'blade1_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.7, 0.7, 0.7, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade2',
+                  name: 'blade2',
+                  type: 'body',
+                  pos: [0, 0, 0],
+                  euler: [120, 12, 0],
+                  joints: [],
+                  geoms: [
+                    { name: 'blade2_sail', type: 'box', size: [0.08, 0.6, 0.015], pos: [0, 0.8, 0], rgba: [0.95, 0.95, 0.95, 1], mass: 0.3, contype: 0, conaffinity: 0 },
+                    { name: 'blade2_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.7, 0.7, 0.7, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade3',
+                  name: 'blade3',
+                  type: 'body',
+                  pos: [0, 0, 0],
+                  euler: [240, 12, 0],
+                  joints: [],
+                  geoms: [
+                    { name: 'blade3_sail', type: 'box', size: [0.08, 0.6, 0.015], pos: [0, 0.8, 0], rgba: [0.95, 0.95, 0.95, 1], mass: 0.3, contype: 0, conaffinity: 0 },
+                    { name: 'blade3_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.7, 0.7, 0.7, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
 export const emptyPreset: SceneGraph = {
   nodes: []
+};
+
+const rotorBEMScript4Blade = `
+const omega = api.getJointVelocity('rotor_hinge');
+const [windX, windY] = api.getWind();
+const R = api.getOrientation();
+const ax = R[0], ay = R[3], az = R[6];
+const Vw = windX * ax + windY * ay;
+const numBlades = 4;
+const R_blade = 0.9, r_hub = 0.15, pitch = 18 * Math.PI / 180, rho = 1.225;
+let totalTorque = 0;
+const N = 5, dr = (R_blade - r_hub) / N;
+for (let i = 0; i < N; i++) {
+  const r = r_hub + (i + 0.5) * dr;
+  const Vt = -omega * r;
+  const Vrel = Math.sqrt(Vw * Vw + Vt * Vt);
+  if (Vrel > 0.05) {
+    const phi = Math.atan2(Math.abs(Vw), Math.abs(Vt));
+    const alpha = phi - pitch;
+    const CL = 1.5 * Math.sin(2 * alpha);
+    const CD = 0.08 + 1.2 * Math.sin(alpha) * Math.sin(alpha);
+    const chord = 0.22 * (1.0 - 0.3 * (r / R_blade));
+    const q = 0.5 * rho * Vrel * Vrel;
+    const dL = q * CL * chord * dr;
+    const dD = q * CD * chord * dr;
+    const signVw = Math.sign(Vw);
+    const dFt = -signVw * (dL * Math.sin(phi) - dD * Math.cos(phi));
+    totalTorque += dFt * r * numBlades;
+  }
+}
+api.applyJointForce('rotor_hinge', totalTorque);
+`.trim();
+
+const yawScript = `
+const [windX, windY] = api.getWind();
+const targetYaw = Math.atan2(windY, windX);
+const currentYaw = api.getJointPosition('yaw_hinge');
+const yawError = targetYaw - currentYaw;
+const yawVel = api.getJointVelocity('yaw_hinge');
+api.applyJointForce('yaw_hinge', 8 * yawError - 3 * yawVel);
+`.trim();
+
+export const traditionalWindmillPreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'tower',
+      name: 'tower',
+      type: 'body',
+      pos: [0, 0, 0],
+      joints: [],
+      geoms: [
+        { name: 'base_box', type: 'box', size: [0.3, 0.3, 0.08], pos: [0, 0, 0.04], rgba: [0.65, 0.45, 0.25, 1], contype: 0, conaffinity: 0 },
+        { name: 'tower_post', type: 'cylinder', size: [0.08, 1], pos: [0, 0, 1.08], rgba: [0.7, 0.5, 0.3, 1], contype: 0, conaffinity: 0 }
+      ],
+      children: [
+        {
+          id: 'nacelle',
+          name: 'nacelle',
+          type: 'body',
+          pos: [0, 0, 2.1],
+          joints: [{ name: 'yaw_hinge', type: 'hinge', axis: [0, 0, 1], damping: 2 }],
+          geoms: [
+            { name: 'nacelle_body', type: 'box', size: [0.18, 0.09, 0.09], rgba: [0.7, 0.5, 0.3, 1], contype: 0, conaffinity: 0 }
+          ],
+          script: yawScript,
+          children: [
+            {
+              id: 'tail_vane',
+              name: 'tail_vane',
+              type: 'body',
+              pos: [-0.5, 0, 0.12],
+              euler: [90, 0, 0],
+              joints: [],
+              geoms: [
+                { name: 'vane_fin', type: 'box', size: [0.12, 0.18, 0.005], rgba: [0.85, 0.45, 0.25, 1], mass: 0.15, contype: 0, conaffinity: 0 }
+              ],
+              children: []
+            },
+            {
+              id: 'rotor',
+              name: 'rotor',
+              type: 'body',
+              pos: [0.28, 0, 0],
+              joints: [{ name: 'rotor_hinge', type: 'hinge', axis: [1, 0, 0], damping: 0.15 }],
+              geoms: [
+                { name: 'rotor_hub', type: 'sphere', size: [0.1], rgba: [0.6, 0.4, 0.2, 1], contype: 0, conaffinity: 0 }
+              ],
+              script: rotorBEMScript4Blade,
+              children: [
+                {
+                  id: 'blade1', name: 'blade1', type: 'body', pos: [0, 0, 0], euler: [0, 12, 0], joints: [],
+                  geoms: [
+                    { name: 'blade1_sail', type: 'box', size: [0.1, 0.55, 0.02], pos: [0, 0.75, 0], rgba: [0.95, 0.92, 0.8, 1], mass: 0.4, contype: 0, conaffinity: 0 },
+                    { name: 'blade1_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.6, 0.4, 0.2, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade2', name: 'blade2', type: 'body', pos: [0, 0, 0], euler: [90, 12, 0], joints: [],
+                  geoms: [
+                    { name: 'blade2_sail', type: 'box', size: [0.1, 0.55, 0.02], pos: [0, 0.75, 0], rgba: [0.95, 0.92, 0.8, 1], mass: 0.4, contype: 0, conaffinity: 0 },
+                    { name: 'blade2_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.6, 0.4, 0.2, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade3', name: 'blade3', type: 'body', pos: [0, 0, 0], euler: [180, 12, 0], joints: [],
+                  geoms: [
+                    { name: 'blade3_sail', type: 'box', size: [0.1, 0.55, 0.02], pos: [0, 0.75, 0], rgba: [0.95, 0.92, 0.8, 1], mass: 0.4, contype: 0, conaffinity: 0 },
+                    { name: 'blade3_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.6, 0.4, 0.2, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                },
+                {
+                  id: 'blade4', name: 'blade4', type: 'body', pos: [0, 0, 0], euler: [270, 12, 0], joints: [],
+                  geoms: [
+                    { name: 'blade4_sail', type: 'box', size: [0.1, 0.55, 0.02], pos: [0, 0.75, 0], rgba: [0.95, 0.92, 0.8, 1], mass: 0.4, contype: 0, conaffinity: 0 },
+                    { name: 'blade4_shaft', type: 'capsule', fromto: [0, 0, 0, 0, 0.2, 0], size: [0.025], rgba: [0.6, 0.4, 0.2, 1], mass: 0.1, contype: 0, conaffinity: 0 }
+                  ],
+                  children: []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
 };
 
 export const PRESETS = {
@@ -1234,5 +1560,20 @@ export const PRESETS = {
   coin_flip: {
     name: 'Coin Flip',
     scene: coinFlipPreset
+  },
+  windmill: {
+    name: 'Wind Turbine',
+    scene: windmillPreset,
+    environment: { windX: 5.0, windY: 0.0 }
+  },
+  physics_only_windmill: {
+    name: 'Wind Turbine (No Script)',
+    scene: physicsOnlyWindmillPreset,
+    environment: { windX: 5.0, windY: 0.0 }
+  },
+  traditional_windmill: {
+    name: 'Traditional Windmill (4-Blade)',
+    scene: traditionalWindmillPreset,
+    environment: { windX: 5.0, windY: 0.0 }
   }
 };

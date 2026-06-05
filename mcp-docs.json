@@ -3,9 +3,18 @@
   "workflow": [
     "1. Call physics_get_schema to understand available geom/joint types and fields.",
     "2. Use physics_build_scene (easy, auto-fills defaults) or physics_update_scene (full control).",
-    "3. Call physics_play to start simulation, physics_stop to pause, physics_reset to restart.",
-    "4. Use physics_run_headless to simulate N ticks and get trajectory data without disrupting the live view.",
+    "3. Use physics_run_headless to simulate N ticks and verify behaviour programmatically — check final positions, velocities, or trajectory shape against expected values. Do this before relying on visual inspection.",
+    "4. Call physics_play to show the simulation to the user once you have confirmed it behaves correctly via headless run.",
     "5. Use physics_set_environment to adjust gravity, wind, floor friction, and fluid density."
+  ],
+  "gotchas": [
+    "DO NOT add a body with a plane geom as a floor. MuJoCo provides a built-in ground plane at Z=0 automatically. Adding a plane body causes a silent compile error — the scene loads but physics_play returns ok:true while isPlaying stays false. Omit the floor body entirely.",
+    "After calling physics_play, immediately call physics_get_state and check that isPlaying is true. If it is still false, the scene failed to compile (likely a bad geom, duplicate name, or plane body conflict). Fix the scene and try again.",
+    "Script functions require the 'api.' prefix. Writing getTime() instead of api.getTime() throws ReferenceError and silently breaks the script. All api calls must be api.functionName(...).",
+    "To give a body an initial velocity, use a script with a first-tick guard: if (api.getTime() === 0) { api.setVelocity([...], 'bodyName'); }. Using === 0 fires exactly on the first tick.",
+    "The script field on a SceneNode is a single string: 'script': '...' — NOT an array. Passing scripts:[{code:'...'}] or scripts:['...'] will silently be ignored and the script will never run. Always use the singular 'script' key with a flat string value.",
+    "Bodies that should NOT collide with each other (e.g. windmill blades, rotor hub, nacelle) MUST have contype:0 AND conaffinity:0 on ALL their geoms. Without this, sibling bodies that overlap near a shared parent origin generate huge contact-constraint forces that oscillate and prevent scripted torques from accumulating. Even a few millimetres of geom overlap near the hub causes ±1 rad/s oscillation that prevents spin-up.",
+    "api.getOrientation() returns the 9-element row-major rotation matrix of the body the script is attached to (xmat). Column 0 = [R[0], R[3], R[6]] is the body's local X-axis in world space. For a rotor with hinge axis=[1,0,0], project wind onto this axis to get the effective wind speed: Vw = windX*R[0] + windY*R[3]."
   ],
   "coordinateSystem": {
     "mujocoWorldSpace": "X=right, Y=forward (into screen), Z=up. Ground plane at Z=0. Gravity default: Z=-9.81.",
@@ -21,12 +30,12 @@
     "physics_toggle_play": "Toggle play/pause of the physics simulation.",
     "physics_reset": "Reset the physics simulation to its initial state.",
     "physics_list_presets": "Return available physics scene preset names.",
-    "physics_load_preset": "Load a physics scene preset. Valid presets: pendulum, cubes, gears, machine, rack_pinion, inclined_plane, pulley_system, cartpole, newtons_cradle, suspension_bridge, paper_plane, monkey_head, golden_gate, golden_gate_mesh, mesh_collision, coin_flip.",
+    "physics_load_preset": "Load a physics scene preset. Valid presets: pendulum, cubes, gears, machine, rack_pinion, inclined_plane, pulley_system, cartpole, newtons_cradle, suspension_bridge, paper_plane, monkey_head, golden_gate, golden_gate_mesh, mesh_collision, coin_flip, windmill, physics_only_windmill, traditional_windmill.",
     "physics_set_environment": "Update physics environment. gravityZ is negative for downward gravity (e.g. -9.81). windX/windY add lateral fluid drag. density adds buoyancy. floorFriction controls ground grip. All fields optional.",
     "physics_update_scene": "Replace the full scene graph. Must match the SceneGraph type: { nodes: SceneNode[] }. Full control but requires complete valid structure.",
     "physics_get_schema": "Return the full schema describing every geom type, joint type, and field. Call this first when building scenes.",
     "physics_build_scene": "Build and load a scene from simplified body descriptors. Auto-fills safe defaults. Easier than physics_update_scene.",
-    "physics_run_headless": "Run the physics simulation headlessly for N ticks. Returns trajectory: [{time, bodies:{name:{pos,vel,angvel}}, joints:{name:{pos,vel}}}]. Does not affect the live view."
+    "physics_run_headless": "Run the physics simulation headlessly for N ticks. Returns trajectory: [{time, bodies:{name:{pos,vel,angvel}}, joints:{name:{pos,vel}}}]. Does not affect the live view. Use this to verify scene behaviour programmatically — e.g. check a projectile lands in the right place, a pendulum reaches the right angle, or a body comes to rest at the expected position — before calling physics_play for visual presentation."
   },
   "schema": {
     "geomTypes": ["box", "sphere", "capsule", "cylinder", "ellipsoid", "plane", "mesh"],
@@ -83,7 +92,7 @@
       "weldTargetId": "id of body to rigidly weld (closed-loop constraint)",
       "connectTargetId": "id of body for ball-socket point constraint",
       "connectAnchor": "[x,y,z] world-space anchor for connect constraint",
-      "script": "JavaScript control script running at 1000 Hz. Has access to global api object: isKeyPressed(keyName), getPosition(bodyName), getVelocity(bodyName), getAngularVelocity(bodyName), setPosition(pos, bodyName), setVelocity(vel, bodyName), setAngularVelocity(angvel, bodyName), getMass(bodyName), getJointPosition(jointName), getJointVelocity(jointName), applyForce(forceVec, bodyName), applyTorque(torqueVec, bodyName), applyJointForce(jointName, forceVal), setActuatorControl(actuatorName, ctrlVal), getTime(), getWind(), log(msg)."
+      "script": "JavaScript control script running at 1000 Hz. IMPORTANT: all functions must be called with the 'api.' prefix — e.g. api.getTime(), api.setVelocity([...], 'bodyName'). Bare calls like getTime() will throw ReferenceError. Available: api.isKeyPressed(keyName), api.getPosition(bodyName), api.getVelocity(bodyName), api.getAngularVelocity(bodyName), api.setPosition(pos, bodyName), api.setVelocity(vel, bodyName), api.setAngularVelocity(angvel, bodyName), api.getMass(bodyName), api.getJointPosition(jointName), api.getJointVelocity(jointName), api.applyForce(forceVec, bodyName), api.applyTorque(torqueVec, bodyName), api.applyJointForce(jointName, forceVal), api.setActuatorControl(actuatorName, ctrlVal), api.getTime(), api.getWind(), api.log(msg). To launch a body with an initial velocity on the first tick: 'if (api.getTime() === 0) { api.setVelocity([vx, vy, vz], \"bodyName\"); api.setAngularVelocity([wx, wy, wz], \"bodyName\"); }'"
     },
     "jointFields": {
       "name": "string — unique joint name",
@@ -282,6 +291,29 @@
       ]
     },
     {
+      "title": "Scripted Launch — Coin Flip into Cup",
+      "description": "A gold coin launched off the floor with an initial velocity via a first-tick script. Demonstrates api.setVelocity / api.setAngularVelocity and building a hollow cup from fixed box walls. No floor body needed — MuJoCo's built-in ground plane is used.",
+      "notes": [
+        "All script calls use api.* prefix.",
+        "The time guard (api.getTime() < 0.003) fires only on the first simulation step.",
+        "Cup walls are separate fixed bodies (joints:[]) — no joint means fixed to world.",
+        "Trajectory maths: vx=0.4, vz=5.0 → coin reaches x=0.4m at t≈1s, drops through cup opening at z=0.06m."
+      ],
+      "bodies": [
+        {"id": "cup_front",  "name": "cup_front",  "pos": [0.4,  0.037, 0.03], "joints": [], "geoms": [{"name": "cup_front_g",  "type": "box", "size": [0.039, 0.002, 0.03], "rgba": [0.95, 0.9, 0.82, 1]}]},
+        {"id": "cup_back",   "name": "cup_back",   "pos": [0.4, -0.037, 0.03], "joints": [], "geoms": [{"name": "cup_back_g",   "type": "box", "size": [0.039, 0.002, 0.03], "rgba": [0.95, 0.9, 0.82, 1]}]},
+        {"id": "cup_left",   "name": "cup_left",   "pos": [0.363, 0,    0.03], "joints": [], "geoms": [{"name": "cup_left_g",   "type": "box", "size": [0.002, 0.035, 0.03], "rgba": [0.95, 0.9, 0.82, 1]}]},
+        {"id": "cup_right",  "name": "cup_right",  "pos": [0.437, 0,    0.03], "joints": [], "geoms": [{"name": "cup_right_g",  "type": "box", "size": [0.002, 0.035, 0.03], "rgba": [0.95, 0.9, 0.82, 1]}]},
+        {"id": "cup_bottom", "name": "cup_bottom", "pos": [0.4,   0,   0.002], "joints": [], "geoms": [{"name": "cup_bottom_g", "type": "box", "size": [0.035, 0.035, 0.002], "rgba": [0.95, 0.9, 0.82, 1]}]},
+        {
+          "id": "coin", "name": "coin", "pos": [0, 0, 0.001],
+          "joints": [{"name": "coin_joint", "type": "free"}],
+          "geoms": [{"name": "coin_geom", "type": "cylinder", "size": [0.02, 0.001], "mass": 0.01, "rgba": [0.85, 0.65, 0.1, 1]}],
+          "script": "if (api.getTime() === 0) { api.setVelocity([0.4, 0, 5.0], 'coin'); api.setAngularVelocity([0, 25, 0], 'coin'); }"
+        }
+      ]
+    },
+    {
       "title": "Wind Simulation — Bridge Sway",
       "description": "Load the Golden Gate Bridge preset (which has a ball-jointed deck) and apply wind to make it sway.",
       "steps": [
@@ -290,6 +322,18 @@
         "physics_play()",
         "# The deck and cables will sway laterally and spring back."
       ]
+    },
+    {
+      "title": "BEM Aerodynamic Rotor Script",
+      "description": "Blade Element Momentum script for a wind-driven rotor hinge. Attach this script to the rotor body. Set windX via physics_set_environment. All blade and hub geoms must have contype:0/conaffinity:0 to prevent contact oscillation. The traditional_windmill preset uses this pattern with 4 blades.",
+      "notes": [
+        "api.getOrientation() returns the 9-element xmat for the script's own body. Column 0 = [R[0],R[3],R[6]] = rotor X-axis in world (the hinge axis direction).",
+        "Project wind onto the rotor axis: Vw = windX*R[0] + windY*R[3]. This is the effective axial wind speed.",
+        "BEM integrates lift/drag over N radial segments. Tangential force × radius × numBlades gives total hinge torque.",
+        "Apply with api.applyJointForce('rotor_hinge', totalTorque). Forces reset to zero each tick before scripts run.",
+        "With windX=5, R_blade=0.9, 4 blades, pitch=18°: rotor reaches ~-1.9 rad/s at t=0.5s."
+      ],
+      "script": "const omega = api.getJointVelocity('rotor_hinge');\nconst [windX, windY] = api.getWind();\nconst R = api.getOrientation();\nconst ax = R[0], ay = R[3], az = R[6];\nconst Vw = windX * ax + windY * ay;\nconst numBlades = 4;\nconst R_blade = 0.9, r_hub = 0.15, pitch = 18 * Math.PI / 180, rho = 1.225;\nlet totalTorque = 0;\nconst N = 5, dr = (R_blade - r_hub) / N;\nfor (let i = 0; i < N; i++) {\n  const r = r_hub + (i + 0.5) * dr;\n  const Vt = -omega * r;\n  const Vrel = Math.sqrt(Vw * Vw + Vt * Vt);\n  if (Vrel > 0.05) {\n    const phi = Math.atan2(Math.abs(Vw), Math.abs(Vt));\n    const alpha = phi - pitch;\n    const CL = 1.5 * Math.sin(2 * alpha);\n    const CD = 0.08 + 1.2 * Math.sin(alpha) * Math.sin(alpha);\n    const chord = 0.22 * (1.0 - 0.3 * (r / R_blade));\n    const q = 0.5 * rho * Vrel * Vrel;\n    const dL = q * CL * chord * dr;\n    const dD = q * CD * chord * dr;\n    const signVw = Math.sign(Vw);\n    const dFt = -signVw * (dL * Math.sin(phi) - dD * Math.cos(phi));\n    totalTorque += dFt * r * numBlades;\n  }\n}\napi.applyJointForce('rotor_hinge', totalTorque);"
     }
   ]
 }

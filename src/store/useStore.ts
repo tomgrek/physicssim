@@ -249,8 +249,13 @@ export const useStore = create<PhysicsState>()((set, get) => ({
       }
       return;
     }
-    const preset = PRESETS[name as keyof typeof PRESETS];
+    const preset = PRESETS[name as keyof typeof PRESETS] as any;
     if (!preset) return;
+    if (preset.environment) {
+      set(preset.environment);
+    } else {
+      set({ windX: 0, windY: 0 });
+    }
     get().recompile(preset.scene, null, true, true);
   },
   

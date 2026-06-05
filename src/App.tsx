@@ -75,27 +75,20 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
         // Generic aerodynamic logic for any geom type (box, mesh, ellipsoid, etc.)
         const geom = node.geoms?.[0];
         if (geom) {
-          // Derive wing area and chord from geom size, or fall back to sensible defaults
-          const s = geom.size || [];
-          const halfX = s[0] || 0.3;
-          const halfY = s[1] || 0.2;
-          const wingArea = (halfX * 2) * (halfY * 2);
-          const chord = halfX * 2;
-          
           const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
           if (bId !== -1) {
+            // Find parent independent body ID (ancestor with degrees of freedom)
+            let pId = bId;
+            while (pId > 0 && model.body_dofnum[pId] === 0) {
+              pId = model.body_parentid[pId];
+            }
+
             const vx = data.cvel[bId * 6 + 3];
             const vy = data.cvel[bId * 6 + 4];
             const vz = data.cvel[bId * 6 + 5];
             const wx = data.cvel[bId * 6 + 0];
             const wy = data.cvel[bId * 6 + 1];
             const wz = data.cvel[bId * 6 + 2];
-            
-            // Rotational damping
-            const DAMPING = 0.0005;
-            data.xfrc_applied[bId * 6 + 3] -= DAMPING * wx;
-            data.xfrc_applied[bId * 6 + 4] -= DAMPING * wy;
-            data.xfrc_applied[bId * 6 + 5] -= DAMPING * wz;
             
             const o = bId * 9;
             const noseX = data.xmat[o+0], noseY = data.xmat[o+3], noseZ = data.xmat[o+6];
@@ -109,48 +102,105 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             const relVx = vx - windX;
             const relVy = vy - windY;
             const relVz = vz;
-            const relSpeed = Math.sqrt(relVx*relVx + relVy*relVy + relVz*relVz);
             
-            if (relSpeed >= 0.1) {
+            // Project velocity perpendicular to local span axis to isolate 2D airfoil flow
+            const spanDotV = relVx*spanX + relVy*spanY + relVz*spanZ;
+            const airfoilVx = relVx - spanDotV*spanX;
+            const airfoilVy = relVy - spanDotV*spanY;
+            const airfoilVz = relVz - spanDotV*spanZ;
+            const relSpeed = Math.sqrt(airfoilVx*airfoilVx + airfoilVy*airfoilVy + airfoilVz*airfoilVz);
+            
+            if (relSpeed >= 0.05) {
+              // Derive wing area and chord from geom size
+              const s = geom.size || [];
+              const halfX = s[0] || 0.3;
+              const halfY = s[1] || 0.2;
+              const wingArea = (halfX * 2) * (halfY * 2);
+              const chord = halfX * 2;
+              
               const q = 0.5 * 1.225 * relSpeed * relSpeed;
-              const vDotNose = relVx*noseX + relVy*noseY + relVz*noseZ;
-              const cosAoA = Math.max(-1, Math.min(1, vDotNose / relSpeed));
-              const sinAoA = Math.sqrt(Math.max(0, 1 - cosAoA*cosAoA));
-              const aoaSign = (relVz - vDotNose*noseZ) < 0 ? 1 : -1;
-              const alpha = aoaSign * Math.asin(sinAoA);
               
-              const stallFactor = Math.max(0, 1 - Math.pow(Math.abs(alpha) / 0.35, 3));
-              const CL = 3.0 * alpha * stallFactor;
-              const CD = 0.04 + CL * CL / (Math.PI * 4.5 * 0.8);
+              // Normalized flow direction in airfoil plane
+              const vhx = airfoilVx / relSpeed;
+              const vhy = airfoilVy / relSpeed;
+              const vhz = airfoilVz / relSpeed;
               
-              const liftMag = CL * q * wingArea;
-              const dragMag = CD * q * wingArea;
+              // Local velocity components
+              const u_nose = -(vhx*noseX + vhy*noseY + vhz*noseZ);
+              const u_up   = -(vhx*upX   + vhy*upY   + vhz*upZ);
               
-              const vhx = relVx/relSpeed, vhy = relVy/relSpeed, vhz = relVz/relSpeed;
-              const upDotV = upX*vhx + upY*vhy + upZ*vhz;
-              let ldx = upX - upDotV*vhx;
-              let ldy = upY - upDotV*vhy;
-              let ldz = upZ - upDotV*vhz;
-              const ldMag = Math.sqrt(ldx*ldx + ldy*ldy + ldz*ldz);
-              if (ldMag > 1e-6) { ldx/=ldMag; ldy/=ldMag; ldz/=ldMag; }
+              // Angle of attack
+              const alpha = Math.atan2(u_up, u_nose);
               
-              const ddx = -vhx, ddy = -vhy, ddz = -vhz;
+              // Lift and drag coefficients
+              const CL = 1.5 * Math.sin(2 * alpha);
+              const CD = 0.08 + 1.2 * Math.sin(alpha) * Math.sin(alpha);
               
-              data.xfrc_applied[bId * 6 + 0] += liftMag*ldx + dragMag*ddx;
-              data.xfrc_applied[bId * 6 + 1] += liftMag*ldy + dragMag*ddy;
-              data.xfrc_applied[bId * 6 + 2] += liftMag*ldz + dragMag*ddz;
+              // Lift direction perpendicular to flow in airfoil plane
+              const ldx = -u_up * noseX + u_nose * upX;
+              const ldy = -u_up * noseY + u_nose * upY;
+              const ldz = -u_up * noseZ + u_nose * upZ;
               
-              const pitchMoment = -0.1 * alpha * stallFactor * q * wingArea * chord;
-              data.xfrc_applied[bId * 6 + 3] += pitchMoment * spanX;
-              data.xfrc_applied[bId * 6 + 4] += pitchMoment * spanY;
-              data.xfrc_applied[bId * 6 + 5] += pitchMoment * spanZ;
+              // Drag direction opposite to flow
+              const ddx = -vhx;
+              const ddy = -vhy;
+              const ddz = -vhz;
               
+              // Force vectors
+              const fx = (CL * ldx + CD * ddx) * q * wingArea;
+              const fy = (CL * ldy + CD * ddy) * q * wingArea;
+              const fz = (CL * ldz + CD * ddz) * q * wingArea;
+              
+              // Aerodynamic pitch moment
+              const pitchMoment = -0.05 * alpha * q * wingArea * chord;
+              const tx_aero = pitchMoment * spanX;
+              const ty_aero = pitchMoment * spanY;
+              const tz_aero = pitchMoment * spanZ;
+              
+              // Aerodynamic roll restoring moment
               const bankAngle = Math.atan2(upX*spanY - upY*spanX, upZ);
               const rollRestoring = -0.1 * bankAngle * q * wingArea * chord;
-              data.xfrc_applied[bId * 6 + 3] += rollRestoring * noseX;
-              data.xfrc_applied[bId * 6 + 4] += rollRestoring * noseY;
-              data.xfrc_applied[bId * 6 + 5] += rollRestoring * noseZ;
+              const tx_roll = rollRestoring * noseX;
+              const ty_roll = rollRestoring * noseY;
+              const tz_roll = rollRestoring * noseZ;
+              
+              // Query geom position for lever arm calculation
+              const gId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM.value, geom.name || '');
+              let geomWorldX = data.xpos[bId * 3 + 0];
+              let geomWorldY = data.xpos[bId * 3 + 1];
+              let geomWorldZ = data.xpos[bId * 3 + 2];
+              if (gId !== -1) {
+                geomWorldX = data.geom_xpos[gId * 3 + 0];
+                geomWorldY = data.geom_xpos[gId * 3 + 1];
+                geomWorldZ = data.geom_xpos[gId * 3 + 2];
+              }
+              
+              // Lever arm relative to parent independent body COM
+              const rx = geomWorldX - data.xpos[pId * 3 + 0];
+              const ry = geomWorldY - data.xpos[pId * 3 + 1];
+              const rz = geomWorldZ - data.xpos[pId * 3 + 2];
+              
+              // Torque due to force lever arm: r x F
+              const tx_lever = ry * fz - rz * fy;
+              const ty_lever = rz * fx - rx * fz;
+              const tz_lever = rx * fy - ry * fx;
+              
+              // Apply linear forces to parent independent body
+              data.xfrc_applied[pId * 6 + 0] += fx;
+              data.xfrc_applied[pId * 6 + 1] += fy;
+              data.xfrc_applied[pId * 6 + 2] += fz;
+              
+              // Apply torque to parent independent body
+              data.xfrc_applied[pId * 6 + 3] += tx_aero + tx_roll + tx_lever;
+              data.xfrc_applied[pId * 6 + 4] += ty_aero + ty_roll + ty_lever;
+              data.xfrc_applied[pId * 6 + 5] += tz_aero + tz_roll + tz_lever;
             }
+            
+            // Rotational damping (applied to the parent independent body)
+            const DAMPING = 0.0005;
+            data.xfrc_applied[pId * 6 + 3] -= DAMPING * wx;
+            data.xfrc_applied[pId * 6 + 4] -= DAMPING * wy;
+            data.xfrc_applied[pId * 6 + 5] -= DAMPING * wz;
           }
         }
       }
@@ -1881,6 +1931,8 @@ function App() {
                 <option value="golden_gate_mesh">🌉 Golden Gate (Mesh)</option>
                 <option value="mesh_collision">🔺 Mesh Collision Demo</option>
                 <option value="coin_flip">🪙 Coin Flip</option>
+                <option value="windmill">💨 Wind Turbine</option>
+                <option value="physics_only_windmill">💨 Wind Turbine (No Aero)</option>
               </optgroup>
 
               {/* User Presets */}

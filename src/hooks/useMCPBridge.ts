@@ -105,9 +105,407 @@ export function useMCPBridge() {
             
             const trajectory: any[] = [];
             
+            const scriptCache: Record<string, Function> = {};
+            const findNodeByIdInLoop = (nodes: any[], targetId: string): any => {
+              if (!nodes) return null;
+              for (const n of nodes) {
+                if (n.id === targetId) return n;
+                const c = findNodeByIdInLoop(n.children || [], targetId);
+                if (c) return c;
+              }
+              return null;
+            };
+
+            const executeScripts = (nodes: any[]) => {
+              if (!nodes) return;
+              for (const node of nodes) {
+                if (node.isAerodynamic) {
+                  // Generic aerodynamic logic for any geom type (box, mesh, ellipsoid, etc.)
+                  const geom = node.geoms?.[0];
+                  if (geom) {
+                    const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
+                    if (bId !== -1) {
+                      // Find parent independent body ID (ancestor with degrees of freedom)
+                      let parentId = bId;
+                      while (parentId > 0 && headlessModel.body_dofnum[parentId] === 0) {
+                        parentId = headlessModel.body_parentid[parentId];
+                      }
+
+                      const vx = headlessData.cvel[bId * 6 + 3];
+                      const vy = headlessData.cvel[bId * 6 + 4];
+                      const vz = headlessData.cvel[bId * 6 + 5];
+                      const wx = headlessData.cvel[bId * 6 + 0];
+                      const wy = headlessData.cvel[bId * 6 + 1];
+                      const wz = headlessData.cvel[bId * 6 + 2];
+                      
+                      const o = bId * 9;
+                      const noseX = headlessData.xmat[o+0], noseY = headlessData.xmat[o+3], noseZ = headlessData.xmat[o+6];
+                      const spanX = headlessData.xmat[o+1], spanY = headlessData.xmat[o+4], spanZ = headlessData.xmat[o+7];
+                      const upX   = headlessData.xmat[o+2], upY   = headlessData.xmat[o+5], upZ   = headlessData.xmat[o+8];
+                      
+                      const relVx = vx - (windX || 0);
+                      const relVy = vy - (windY || 0);
+                      const relVz = vz;
+                      
+                      // Project velocity perpendicular to local span axis to isolate 2D airfoil flow
+                      const spanDotV = relVx*spanX + relVy*spanY + relVz*spanZ;
+                      const airfoilVx = relVx - spanDotV*spanX;
+                      const airfoilVy = relVy - spanDotV*spanY;
+                      const airfoilVz = relVz - spanDotV*spanZ;
+                      const relSpeed = Math.sqrt(airfoilVx*airfoilVx + airfoilVy*airfoilVy + airfoilVz*airfoilVz);
+                      
+                      if (relSpeed >= 0.05) {
+                        // Derive wing area and chord from geom size
+                        const s = geom.size || [];
+                        const halfX = s[0] || 0.3;
+                        const halfY = s[1] || 0.2;
+                        const wingArea = (halfX * 2) * (halfY * 2);
+                        const chord = halfX * 2;
+                        
+                        const q = 0.5 * 1.225 * relSpeed * relSpeed;
+                        
+                        // Normalized flow direction in airfoil plane
+                        const vhx = airfoilVx / relSpeed;
+                        const vhy = airfoilVy / relSpeed;
+                        const vhz = airfoilVz / relSpeed;
+                        
+                        // Local velocity components
+                        const u_nose = -(vhx*noseX + vhy*noseY + vhz*noseZ);
+                        const u_up   = -(vhx*upX   + vhy*upY   + vhz*upZ);
+                        
+                        // Angle of attack
+                        const alpha = Math.atan2(u_up, u_nose);
+                        
+                        // Lift and drag coefficients
+                        const CL = 1.5 * Math.sin(2 * alpha);
+                        const CD = 0.08 + 1.2 * Math.sin(alpha) * Math.sin(alpha);
+                        
+                        // Lift direction perpendicular to flow in airfoil plane
+                        const ldx = -u_up * noseX + u_nose * upX;
+                        const ldy = -u_up * noseY + u_nose * upY;
+                        const ldz = -u_up * noseZ + u_nose * upZ;
+                        
+                        // Drag direction opposite to flow
+                        const ddx = -vhx;
+                        const ddy = -vhy;
+                        const ddz = -vhz;
+                        
+                        // Force vectors
+                        const fx = (CL * ldx + CD * ddx) * q * wingArea;
+                        const fy = (CL * ldy + CD * ddy) * q * wingArea;
+                        const fz = (CL * ldz + CD * ddz) * q * wingArea;
+                        
+                        // Aerodynamic pitch moment
+                        const pitchMoment = -0.05 * alpha * q * wingArea * chord;
+                        const tx_aero = pitchMoment * spanX;
+                        const ty_aero = pitchMoment * spanY;
+                        const tz_aero = pitchMoment * spanZ;
+                        
+                        // Aerodynamic roll restoring moment
+                        const bankAngle = Math.atan2(upX*spanY - upY*spanX, upZ);
+                        const rollRestoring = -0.1 * bankAngle * q * wingArea * chord;
+                        const tx_roll = rollRestoring * noseX;
+                        const ty_roll = rollRestoring * noseY;
+                        const tz_roll = rollRestoring * noseZ;
+                        
+                        // Query geom position for lever arm calculation
+                        const gId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_GEOM.value, geom.name || '');
+                        let geomWorldX = headlessData.xpos[bId * 3 + 0];
+                        let geomWorldY = headlessData.xpos[bId * 3 + 1];
+                        let geomWorldZ = headlessData.xpos[bId * 3 + 2];
+                        if (gId !== -1) {
+                          geomWorldX = headlessData.geom_xpos[gId * 3 + 0];
+                          geomWorldY = headlessData.geom_xpos[gId * 3 + 1];
+                          geomWorldZ = headlessData.geom_xpos[gId * 3 + 2];
+                        }
+                        
+                        // Lever arm relative to parent independent body COM
+                        const rx = geomWorldX - headlessData.xpos[parentId * 3 + 0];
+                        const ry = geomWorldY - headlessData.xpos[parentId * 3 + 1];
+                        const rz = geomWorldZ - headlessData.xpos[parentId * 3 + 2];
+                        
+                        // Torque due to force lever arm: r x F
+                        const tx_lever = ry * fz - rz * fy;
+                        const ty_lever = rz * fx - rx * fz;
+                        const tz_lever = rx * fy - ry * fx;
+                        
+                        // Apply linear forces to parent independent body
+                        headlessData.xfrc_applied[parentId * 6 + 0] += fx;
+                        headlessData.xfrc_applied[parentId * 6 + 1] += fy;
+                        headlessData.xfrc_applied[parentId * 6 + 2] += fz;
+                        
+                        // Apply torque to parent independent body
+                        headlessData.xfrc_applied[parentId * 6 + 3] += tx_aero + tx_roll + tx_lever;
+                        headlessData.xfrc_applied[parentId * 6 + 4] += ty_aero + ty_roll + ty_lever;
+                        headlessData.xfrc_applied[parentId * 6 + 5] += tz_aero + tz_roll + tz_lever;
+                      }
+                      
+                      // Rotational damping (applied to the parent independent body)
+                      const DAMPING = 0.0005;
+                      headlessData.xfrc_applied[parentId * 6 + 3] -= DAMPING * wx;
+                      headlessData.xfrc_applied[parentId * 6 + 4] -= DAMPING * wy;
+                      headlessData.xfrc_applied[parentId * 6 + 5] -= DAMPING * wz;
+                    }
+                  }
+                }
+
+                if (node.script && node.script.trim() !== '') {
+                  let fn = scriptCache[node.id];
+                  if (!fn) {
+                    try {
+                      fn = new Function('api', node.script);
+                      scriptCache[node.id] = fn;
+                    } catch (e: any) {
+                      console.error(`[Headless Script Compilation Error on node ${node.name}]:`, e);
+                      fn = () => {};
+                      scriptCache[node.id] = fn;
+                    }
+                  }
+
+                  const api = {
+                    id: node.id,
+                    name: node.name,
+                    isKeyPressed: (_keyName: string) => false,
+                    setPosition: (pos: number[] | number, bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return;
+                      const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
+                      if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
+                      const joint = targetNode.joints[0];
+                      const jId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+                      if (jId !== -1) {
+                        const qposadr = headlessModel.jnt_qposadr[jId];
+                        if (joint.type === 'free') {
+                          if (Array.isArray(pos) && pos.length >= 3) {
+                            headlessData.qpos[qposadr + 0] = pos[0];
+                            headlessData.qpos[qposadr + 1] = pos[1];
+                            headlessData.qpos[qposadr + 2] = pos[2];
+                          }
+                        } else if (joint.type === 'ball') {
+                          if (Array.isArray(pos) && pos.length >= 4) {
+                            headlessData.qpos[qposadr + 0] = pos[0];
+                            headlessData.qpos[qposadr + 1] = pos[1];
+                            headlessData.qpos[qposadr + 2] = pos[2];
+                            headlessData.qpos[qposadr + 3] = pos[3];
+                          }
+                        } else {
+                          headlessData.qpos[qposadr] = typeof pos === 'number' ? pos : (Array.isArray(pos) ? pos[0] : 0);
+                        }
+                      }
+                    },
+                    setVelocity: (vel: number[] | number, bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return;
+                      const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
+                      if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
+                      const joint = targetNode.joints[0];
+                      const jId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+                      if (jId !== -1) {
+                        const dofadr = headlessModel.jnt_dofadr[jId];
+                        if (joint.type === 'free') {
+                          if (Array.isArray(vel) && vel.length >= 3) {
+                            headlessData.qvel[dofadr + 0] = vel[0];
+                            headlessData.qvel[dofadr + 1] = vel[1];
+                            headlessData.qvel[dofadr + 2] = vel[2];
+                          }
+                        } else {
+                          headlessData.qvel[dofadr] = typeof vel === 'number' ? vel : (Array.isArray(vel) ? vel[0] : 0);
+                        }
+                      }
+                    },
+                    setAngularVelocity: (angvel: number[] | number, bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return;
+                      const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
+                      if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
+                      const joint = targetNode.joints[0];
+                      const jId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+                      if (jId !== -1) {
+                        const dofadr = headlessModel.jnt_dofadr[jId];
+                        if (joint.type === 'free') {
+                          if (Array.isArray(angvel) && angvel.length >= 3) {
+                            headlessData.qvel[dofadr + 3] = angvel[0];
+                            headlessData.qvel[dofadr + 4] = angvel[1];
+                            headlessData.qvel[dofadr + 5] = angvel[2];
+                          }
+                        } else if (joint.type === 'ball') {
+                          if (Array.isArray(angvel) && angvel.length >= 3) {
+                            headlessData.qvel[dofadr + 0] = angvel[0];
+                            headlessData.qvel[dofadr + 1] = angvel[1];
+                            headlessData.qvel[dofadr + 2] = angvel[2];
+                          }
+                        } else if (joint.type === 'hinge') {
+                          headlessData.qvel[dofadr] = typeof angvel === 'number' ? angvel : (Array.isArray(angvel) ? angvel[0] : 0);
+                        }
+                      }
+                    },
+                    getPosition: (bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return [0, 0, 0];
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      if (bId !== -1) {
+                        return [
+                          headlessData.xpos[bId * 3],
+                          headlessData.xpos[bId * 3 + 1],
+                          headlessData.xpos[bId * 3 + 2]
+                        ];
+                      }
+                      return [0, 0, 0];
+                    },
+                    getVelocity: (bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return [0, 0, 0];
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      if (bId !== -1) {
+                        return [
+                          headlessData.cvel[bId * 6 + 3],
+                          headlessData.cvel[bId * 6 + 4],
+                          headlessData.cvel[bId * 6 + 5]
+                        ];
+                      }
+                      return [0, 0, 0];
+                    },
+                    getAngularVelocity: (bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return [0, 0, 0];
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      if (bId !== -1) {
+                        return [
+                          headlessData.cvel[bId * 6 + 0],
+                          headlessData.cvel[bId * 6 + 1],
+                          headlessData.cvel[bId * 6 + 2]
+                        ];
+                      }
+                      return [0, 0, 0];
+                    },
+                    getMass: (bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return 0;
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      return bId !== -1 ? headlessModel.body_mass[bId] : 0;
+                    },
+                    getJointPosition: (jointName: string) => {
+                      if (!headlessModel || !mujoco || !headlessData) return 0;
+                      const jId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+                      if (jId !== -1) {
+                        const adr = headlessModel.jnt_qposadr[jId];
+                        return headlessData.qpos[adr];
+                      }
+                      return 0;
+                    },
+                    getJointVelocity: (jointName: string) => {
+                      if (!headlessModel || !mujoco || !headlessData) return 0;
+                      const jId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+                      if (jId !== -1) {
+                        const adr = headlessModel.jnt_dofadr[jId];
+                        return headlessData.qvel[adr];
+                      }
+                      return 0;
+                    },
+                    applyForce: (forceVec: number[], bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData || !Array.isArray(forceVec)) return;
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      if (bId !== -1) {
+                        headlessData.xfrc_applied[bId * 6 + 0] += forceVec[0] || 0;
+                        headlessData.xfrc_applied[bId * 6 + 1] += forceVec[1] || 0;
+                        headlessData.xfrc_applied[bId * 6 + 2] += forceVec[2] || 0;
+                      }
+                    },
+                    applyTorque: (torqueVec: number[], bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData || !Array.isArray(torqueVec)) return;
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      if (bId !== -1) {
+                        headlessData.xfrc_applied[bId * 6 + 3] += torqueVec[0] || 0;
+                        headlessData.xfrc_applied[bId * 6 + 4] += torqueVec[1] || 0;
+                        headlessData.xfrc_applied[bId * 6 + 5] += torqueVec[2] || 0;
+                      }
+                    },
+                    getOrientation: (bodyName = node.id) => {
+                      if (!headlessModel || !mujoco || !headlessData) return [1,0,0, 0,1,0, 0,0,1];
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+                      if (bId !== -1) {
+                        const o = bId * 9;
+                        return [
+                          headlessData.xmat[o+0], headlessData.xmat[o+1], headlessData.xmat[o+2],
+                          headlessData.xmat[o+3], headlessData.xmat[o+4], headlessData.xmat[o+5],
+                          headlessData.xmat[o+6], headlessData.xmat[o+7], headlessData.xmat[o+8]
+                        ];
+                      }
+                      return [1,0,0, 0,1,0, 0,0,1];
+                    },
+                    applyJointForce: (jointName: string, forceVal: number) => {
+                      if (!headlessModel || !mujoco || !headlessData || typeof forceVal !== 'number') return;
+                      const jId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+                      if (jId !== -1) {
+                        const adr = headlessModel.jnt_dofadr[jId];
+                        headlessData.qfrc_applied[adr] += forceVal;
+                      }
+                    },
+                    setActuatorControl: (actuatorName: string, ctrlVal: number) => {
+                      if (!headlessModel || !mujoco || !headlessData || typeof ctrlVal !== 'number') return;
+                      const actId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_ACTUATOR.value, actuatorName);
+                      if (actId !== -1) {
+                        headlessData.ctrl[actId] = ctrlVal;
+                      }
+                    },
+                    getTime: () => {
+                      return headlessData ? headlessData.time : 0;
+                    },
+                    getWind: () => {
+                      return [windX || 0, windY || 0];
+                    },
+                    log: (msg: any) => {
+                      console.log(`[HeadlessScript:${node.name}]`, msg);
+                    }
+                  };
+
+                  try {
+                    fn(api);
+                  } catch (e: any) {
+                    console.error(`[Headless Script Runtime Error on node ${node.name}]:`, e);
+                  }
+                }
+
+                if (node.children) {
+                  executeScripts(node.children);
+                }
+              }
+            };
+
+            const applyFreeJointDamping = (nodes: any[]) => {
+              if (!nodes) return;
+              for (const node of nodes) {
+                if (node.joints) {
+                  for (const joint of node.joints) {
+                    if (joint.type === 'free' && joint.damping !== undefined && joint.damping > 0) {
+                      const bId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
+                      if (bId !== -1) {
+                        const wx = headlessData.cvel[bId * 6 + 0];
+                        const wy = headlessData.cvel[bId * 6 + 1];
+                        const wz = headlessData.cvel[bId * 6 + 2];
+                        const vx = headlessData.cvel[bId * 6 + 3];
+                        const vy = headlessData.cvel[bId * 6 + 4];
+                        const vz = headlessData.cvel[bId * 6 + 5];
+
+                        const c = joint.damping;
+                        const mass = headlessModel.body_mass[bId] || 1.0;
+                        const ix = headlessModel.body_inertia[bId * 3 + 0] || 1.0;
+                        const iy = headlessModel.body_inertia[bId * 3 + 1] || 1.0;
+                        const iz = headlessModel.body_inertia[bId * 3 + 2] || 1.0;
+
+                        headlessData.xfrc_applied[bId * 6 + 0] -= c * mass * vx;
+                        headlessData.xfrc_applied[bId * 6 + 1] -= c * mass * vy;
+                        headlessData.xfrc_applied[bId * 6 + 2] -= c * mass * vz;
+                        headlessData.xfrc_applied[bId * 6 + 3] -= c * ix * wx;
+                        headlessData.xfrc_applied[bId * 6 + 4] -= c * iy * wy;
+                        headlessData.xfrc_applied[bId * 6 + 5] -= c * iz * wz;
+                      }
+                    }
+                  }
+                }
+                applyFreeJointDamping(node.children || []);
+              }
+            };
+
             for (let i = 0; i < ticks; i++) {
               headlessData.xfrc_applied.fill(0);
               headlessData.qfrc_applied.fill(0);
+              
+              executeScripts(sceneGraph.nodes);
+              applyFreeJointDamping(sceneGraph.nodes);
               
               mujoco.mj_step(headlessModel, headlessData);
               
@@ -220,7 +618,13 @@ export function useMCPBridge() {
 
         case 'SET_ENVIRONMENT': {
           const { gravityZ, windX, windY, density, floorFriction } = msg;
-          store.setEnvironment({ gravityZ, windX, windY, density, floorFriction });
+          const env: Record<string, number> = {};
+          if (gravityZ !== undefined) env.gravityZ = gravityZ;
+          if (windX !== undefined) env.windX = windX;
+          if (windY !== undefined) env.windY = windY;
+          if (density !== undefined) env.density = density;
+          if (floorFriction !== undefined) env.floorFriction = floorFriction;
+          store.setEnvironment(env);
           return { ok: true };
         }
 
