@@ -1067,12 +1067,12 @@ export const coinFlipPreset: SceneGraph = {
       ],
       script: `// Coin Flip Script
 // On the very first frame of the simulation (time = 0),
-// add a small amount of random perturbation to the launch angular velocity.
+// add a healthy amount of random perturbation to the launch angular velocity.
 if (api.getTime() === 0) {
   const currentAngVel = api.getAngularVelocity();
-  const wx = currentAngVel[0] + (Math.random() - 0.5) * (Math.abs(currentAngVel[0]) * 0.1 + 0.5);
-  const wy = currentAngVel[1] + (Math.random() - 0.5) * (Math.abs(currentAngVel[1]) * 0.1 + 0.5);
-  const wz = currentAngVel[2] + (Math.random() - 0.5) * (Math.abs(currentAngVel[2]) * 0.1 + 0.5);
+  const wx = currentAngVel[0] + (Math.random() - 0.5) * (Math.abs(currentAngVel[0]) * 0.3 + 3.0);
+  const wy = currentAngVel[1] + (Math.random() - 0.5) * (Math.abs(currentAngVel[1]) * 0.5 + 8.0);
+  const wz = currentAngVel[2] + (Math.random() - 0.5) * (Math.abs(currentAngVel[2]) * 0.3 + 3.0);
   api.setAngularVelocity([wx, wy, wz]);
 }
 `,
