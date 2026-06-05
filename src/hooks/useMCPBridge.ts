@@ -76,6 +76,36 @@ export function useMCPBridge() {
             const headlessData = new mujoco.MjData(headlessModel);
             
             mujoco.mj_forward(headlessModel, headlessData);
+
+            // Inject initial velocities (including launch-time random spin on free joints)
+            const initVelJoints: { name: string; vel: number[]; type?: string }[] = [];
+            const traverseVel = (nodes: any[]) => {
+              if (!nodes) return;
+              for (const node of nodes) {
+                node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity, type: j.type }); });
+                traverseVel(node.children);
+              }
+            };
+            traverseVel(sceneGraph.nodes);
+            
+            let needForward = false;
+            for (const j of initVelJoints) {
+              const jntId = mujoco.mj_name2id(headlessModel, mujoco.mjtObj.mjOBJ_JOINT.value, j.name);
+              if (jntId !== -1) {
+                const dofAdr = headlessModel.jnt_dofadr[jntId];
+                for (let i = 0; i < j.vel.length; i++) {
+                  let val = j.vel[i];
+                  if (j.type === 'free' && i >= 3) {
+                    val += (Math.random() - 0.5) * (Math.abs(val) * 0.1 + 0.5);
+                  }
+                  headlessData.qvel[dofAdr + i] = val;
+                }
+                needForward = true;
+              }
+            }
+            if (needForward) {
+              mujoco.mj_forward(headlessModel, headlessData);
+            }
             
             const trajectory: any[] = [];
             
