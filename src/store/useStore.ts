@@ -919,11 +919,11 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         console.log("Initial geom_xpos:", Array.from(newData.geom_xpos).join(', '));
         
         // Inject generic initial velocities defined on any joints
-        const initVelJoints: { name: string; vel: number[] }[] = [];
+        const initVelJoints: { name: string; vel: number[]; type?: string }[] = [];
         const traverseVel = (nodes: any[]) => {
           if (!nodes) return;
           for (const node of nodes) {
-            node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity }); });
+            node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity, type: j.type }); });
             traverseVel(node.children);
           }
         };
@@ -935,7 +935,12 @@ export const useStore = create<PhysicsState>()((set, get) => ({
           if (jntId !== -1) {
             const dofAdr = newModel.jnt_dofadr[jntId];
             for (let i = 0; i < j.vel.length; i++) {
-              newData.qvel[dofAdr + i] = j.vel[i];
+              let val = j.vel[i];
+              if (j.type === 'free' && i >= 3) {
+                // Add a small amount of randomness to initial angular velocity (indices 3, 4, 5)
+                val += (Math.random() - 0.5) * (Math.abs(val) * 0.1 + 0.5);
+              }
+              newData.qvel[dofAdr + i] = val;
             }
             needForward = true;
           }

@@ -17,6 +17,52 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
   const scriptCache = useRef<Record<string, Function>>({});
   const sceneGraph = useStore(state => state.sceneGraph);
 
+  const pressedKeys = useRef<Set<string>>(new Set());
+
+  // Monitor key presses globally, ignoring keypresses inside form inputs and textareas
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const active = document.activeElement;
+      if (active && (
+        active.tagName === 'INPUT' || 
+        active.tagName === 'TEXTAREA' || 
+        active.getAttribute('contenteditable') === 'true'
+      )) {
+        return;
+      }
+      pressedKeys.current.add(e.key.toLowerCase());
+      pressedKeys.current.add(e.code.toLowerCase());
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      pressedKeys.current.delete(e.key.toLowerCase());
+      pressedKeys.current.delete(e.code.toLowerCase());
+    };
+
+    const handleBlur = () => {
+      pressedKeys.current.clear();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  const findNodeByIdInLoop = (nodesList: any[], targetId: string): any => {
+    if (!nodesList) return null;
+    for (const n of nodesList) {
+      if (n.id === targetId) return n;
+      const c = findNodeByIdInLoop(n.children || [], targetId);
+      if (c) return c;
+    }
+    return null;
+  };
+
   // Auto-clear cache when scene graph is edited (e.g. scripts saved)
   useEffect(() => {
     scriptCache.current = {};
@@ -108,7 +154,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           }
         }
       }
-
+ 
       if (node.script && node.script.trim() !== '') {
         let fn = scriptCache.current[node.id];
         if (!fn) {
@@ -121,11 +167,93 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             scriptCache.current[node.id] = fn;
           }
         }
-
+ 
         const api = {
           id: node.id,
           name: node.name,
-
+ 
+          // Returns true if the key (e.g. 'space', 'w', 'arrowup') is currently pressed
+          isKeyPressed: (keyName: string) => {
+            if (!keyName) return false;
+            return pressedKeys.current.has(keyName.toLowerCase());
+          },
+ 
+          // Sets target body's position
+          setPosition: (pos: number[] | number, bodyName = node.id) => {
+            if (!model || !mujoco || !data) return;
+            const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
+            if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
+            const joint = targetNode.joints[0];
+            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+            if (jId !== -1) {
+              const qposadr = model.jnt_qposadr[jId];
+              if (joint.type === 'free') {
+                if (Array.isArray(pos) && pos.length >= 3) {
+                  data.qpos[qposadr + 0] = pos[0];
+                  data.qpos[qposadr + 1] = pos[1];
+                  data.qpos[qposadr + 2] = pos[2];
+                }
+              } else if (joint.type === 'ball') {
+                if (Array.isArray(pos) && pos.length >= 4) {
+                  data.qpos[qposadr + 0] = pos[0];
+                  data.qpos[qposadr + 1] = pos[1];
+                  data.qpos[qposadr + 2] = pos[2];
+                  data.qpos[qposadr + 3] = pos[3];
+                }
+              } else {
+                data.qpos[qposadr] = typeof pos === 'number' ? pos : (Array.isArray(pos) ? pos[0] : 0);
+              }
+            }
+          },
+ 
+          // Sets target body's linear velocity
+          setVelocity: (vel: number[] | number, bodyName = node.id) => {
+            if (!model || !mujoco || !data) return;
+            const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
+            if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
+            const joint = targetNode.joints[0];
+            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+            if (jId !== -1) {
+              const dofadr = model.jnt_dofadr[jId];
+              if (joint.type === 'free') {
+                if (Array.isArray(vel) && vel.length >= 3) {
+                  data.qvel[dofadr + 0] = vel[0];
+                  data.qvel[dofadr + 1] = vel[1];
+                  data.qvel[dofadr + 2] = vel[2];
+                }
+              } else {
+                data.qvel[dofadr] = typeof vel === 'number' ? vel : (Array.isArray(vel) ? vel[0] : 0);
+              }
+            }
+          },
+ 
+          // Sets target body's angular velocity
+          setAngularVelocity: (angvel: number[] | number, bodyName = node.id) => {
+            if (!model || !mujoco || !data) return;
+            const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
+            if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
+            const joint = targetNode.joints[0];
+            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+            if (jId !== -1) {
+              const dofadr = model.jnt_dofadr[jId];
+              if (joint.type === 'free') {
+                if (Array.isArray(angvel) && angvel.length >= 3) {
+                  data.qvel[dofadr + 3] = angvel[0];
+                  data.qvel[dofadr + 4] = angvel[1];
+                  data.qvel[dofadr + 5] = angvel[2];
+                }
+              } else if (joint.type === 'ball') {
+                if (Array.isArray(angvel) && angvel.length >= 3) {
+                  data.qvel[dofadr + 0] = angvel[0];
+                  data.qvel[dofadr + 1] = angvel[1];
+                  data.qvel[dofadr + 2] = angvel[2];
+                }
+              } else if (joint.type === 'hinge') {
+                data.qvel[dofadr] = typeof angvel === 'number' ? angvel : (Array.isArray(angvel) ? angvel[0] : 0);
+              }
+            }
+          },
+ 
           // Reads physical position [X, Y, Z] of any body in the scene
           getPosition: (bodyName = node.id) => {
             if (!model || !mujoco || !data) return [0, 0, 0];
@@ -3979,8 +4107,8 @@ api.applyForce([force, 0, 0]);
                         </ul>
                       </div>
 
-                      <div className="text-xs border-t border-slate-150 pt-3">
-                        <strong className="text-slate-800 font-semibold">🔄 Retrieving Sensor Data & Joint Positions</strong>
+                       <div className="text-xs border-t border-slate-150 pt-3">
+                        <strong className="text-slate-800 font-semibold">🔄 Retrieving Sensor Data & Key Inputs</strong>
                         <p className="text-slate-500 mt-1 leading-relaxed">
                           Use the following API methods in your script:
                         </p>
@@ -3991,21 +4119,29 @@ const [vx, vy, vz] = api.getVelocity('cart');
 
 // 2. Get joint-aligned values (highly recommended for controls)
 const position = api.getJointPosition('cart_slide'); // Slider: meters, Hinge: radians
-const velocity = api.getJointVelocity('cart_slide'); // Slider: m/s, Hinge: rad/s`}
+const velocity = api.getJointVelocity('cart_slide'); // Slider: m/s, Hinge: rad/s
+
+// 3. Check if keyboard key is active (excluding editor inputs)
+const isSpacePressed = api.isKeyPressed('space'); // Supports: 'space', 'w', 'arrowup', etc.`}
                         </pre>
                       </div>
-
+ 
                       <div className="text-xs border-t border-slate-150 pt-3">
-                        <strong className="text-slate-800 font-semibold">⚡ Applying Forces & Controlling Motors</strong>
+                        <strong className="text-slate-800 font-semibold">⚡ Applying Forces & Modifying State</strong>
                         <p className="text-slate-500 mt-1 leading-relaxed">
-                          Apply forces directly, or write a PD / LQR control loop to command motors:
+                          Apply forces directly, command motors, or override position/velocity state:
                         </p>
                         <pre className="mt-2 bg-slate-950 text-emerald-400 p-2.5 rounded-lg font-mono text-[10px] leading-relaxed shadow-inner overflow-x-auto">
 {`// Apply torque or force aligned to the joint
 api.applyJointForce('cart_slide', 15.5); // Applies linear force
 
 // Command actuator motor velocity target
-api.setActuatorControl('cart_slide_actuator', 1.0); // Drive cart at 1.0 m/s`}
+api.setActuatorControl('cart_slide_actuator', 1.0); // Drive cart at 1.0 m/s
+
+// Directly set physical state (useful for resets or active launches)
+api.setPosition([0, 0, 0.5], 'cart'); // Sets joint positions
+api.setVelocity([0, 0, 5.0], 'cart'); // Sets linear velocities
+api.setAngularVelocity([0, 15.0, 0], 'cart'); // Sets angular velocities`}
                         </pre>
                       </div>
                     </div>

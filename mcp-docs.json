@@ -83,7 +83,7 @@
       "weldTargetId": "id of body to rigidly weld (closed-loop constraint)",
       "connectTargetId": "id of body for ball-socket point constraint",
       "connectAnchor": "[x,y,z] world-space anchor for connect constraint",
-      "script": "JavaScript control script string"
+      "script": "JavaScript control script running at 1000 Hz. Has access to global api object: isKeyPressed(keyName), getPosition(bodyName), getVelocity(bodyName), getAngularVelocity(bodyName), setPosition(pos, bodyName), setVelocity(vel, bodyName), setAngularVelocity(angvel, bodyName), getMass(bodyName), getJointPosition(jointName), getJointVelocity(jointName), applyForce(forceVec, bodyName), applyTorque(torqueVec, bodyName), applyJointForce(jointName, forceVal), setActuatorControl(actuatorName, ctrlVal), getTime(), getWind(), log(msg)."
     },
     "jointFields": {
       "name": "string — unique joint name",

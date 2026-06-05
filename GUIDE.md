@@ -33,7 +33,7 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 ### 2. 🪐 Gravity and DOF (Degrees of Freedom)
 * **Static Bodies**: Nodes with `joints: []` have infinite mass and are welded directly to the world frame. Gravity has no effect on them.
 * **Hinge Joints**: constrained to 1D axial rotation. Symmetrical components have their center of mass exactly on the axis pivot, which yields zero gravity-torque.
-* **Free Joints**: Complete 6-DOF unconstrained movement, yielding free-fall acceleration. Their initial velocity state consists of a 6-element array `[vx, vy, vz, wx, wy, wz]`, where indices 0–2 represent linear velocity ($m/s$) and indices 3–5 represent angular velocity (Roll, Pitch, Yaw in $rad/s$). Both of these are fully adjustable in the properties panel under "Launch Velocity" and "Launch Spin".
+* **Free Joints**: Complete 6-DOF unconstrained movement, yielding free-fall acceleration. Their initial velocity state consists of a 6-element array `[vx, vy, vz, wx, wy, wz]`, where indices 0–2 represent linear velocity ($m/s$) and indices 3–5 represent angular velocity (Roll, Pitch, Yaw in $rad/s$). Both of these are fully adjustable in the properties panel under "Launch Velocity" and "Launch Spin". At simulation recompile/reset (launch), a small random perturbation is added to the angular velocities (`[wx, wy, wz]`) using the formula `val += (Math.random() - 0.5) * (Math.abs(val) * 0.1 + 0.5)` to provide natural non-deterministic spin variations.
 * **Free Joint Damping**: While standard joints are damped natively in MuJoCo, free joints do not support joint-level damping. We simulate this by applying drag forces ($F = -c \cdot m \cdot v$) and drag torques ($T = -c \cdot I \cdot \omega$) scaled by mass and principal moments of inertia respectively inside the step loop. This ensures both linear velocity and angular spin decay uniformly at the user-configured rate ($e^{-ct}$) instead of spinning decaying instantly.
 
 ### 3. 🔹 Nested Sub-Geometries & Selection
@@ -57,6 +57,31 @@ Welcome to the **Physics Expt** development reference guide. This document centr
 * `src/store/useStore.ts`: State management and scene node mutation actions.
 * `src/utils/mjcf.ts`: Compiles the Zustand scene node graph into high-fidelity MJCF XML code.
 * `src/presets/presetScenes.ts`: Initial scene definitions and configurations.
+
+---
+
+## 💻 Control Scripting API Reference
+
+Each dynamic body can run a JavaScript control script inside the physics loop step. The script has access to a global `api` object.
+
+### API Methods:
+- **`api.isKeyPressed(keyName)`**: Checks if a key (e.g., `'space'`, `'w'`, `'arrowup'`, `'enter'`) is currently pressed. Case-insensitive. Matches both `e.key` and `e.code`.
+- **`api.getPosition(bodyName)`**: Returns the 3D position vector `[x, y, z]` of the specified body (defaults to current body).
+- **`api.getVelocity(bodyName)`**: Returns the 3D linear velocity `[vx, vy, vz]` of the body.
+- **`api.getAngularVelocity(bodyName)`**: Returns the 3D angular velocity `[wx, wy, wz]` of the body.
+- **`api.setPosition(pos, bodyName)`**: Dynamically sets the 3D position `[x, y, z]` (or 1D position for hinge/slide joints) of the body.
+- **`api.setVelocity(vel, bodyName)`**: Dynamically sets the 3D linear velocity `[vx, vy, vz]` (or 1D velocity) of the body.
+- **`api.setAngularVelocity(angvel, bodyName)`**: Dynamically sets the 3D angular velocity `[wx, wy, wz]` (or 1D angular velocity) of the body.
+- **`api.getMass(bodyName)`**: Returns the mass of the body.
+- **`api.getJointPosition(jointName)`**: Returns the 1D position of a hinge or slide joint.
+- **`api.getJointVelocity(jointName)`**: Returns the 1D velocity of a hinge or slide joint.
+- **`api.applyForce(forceVec, bodyName)`**: Applies a 3D force vector `[fx, fy, fz]` to the body.
+- **`api.applyTorque(torqueVec, bodyName)`**: Applies a 3D torque vector `[tx, ty, tz]` to the body.
+- **`api.applyJointForce(jointName, forceVal)`**: Applies a 1D force/torque along/around the joint axis.
+- **`api.setActuatorControl(actuatorName, ctrlVal)`**: Sets control value for the named actuator.
+- **`api.getTime()`**: Returns the current simulation time.
+- **`api.getWind()`**: Returns the current wind vector `[windX, windY]`.
+- **`api.log(msg)`**: Logs a debug message to the console.
 
 ---
 

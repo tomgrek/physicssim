@@ -12,7 +12,7 @@ A browser-based rigid-body physics simulator powered by MuJoCo WASM. Build, simu
 - **Joints** — free (with physical damping/drag decay), hinge, slide, ball (with stiffness/damping/limits/actuators)
 - **Constraints** — gear coupling, rack-and-pinion, pulley ropes, weld, connect
 - **Aerodynamics** — lift/drag model for winged bodies
-- **Control scripts** — per-body JavaScript running at 1000 Hz (LQR, PID, custom)
+- **Control scripts** — per-body JavaScript running at 1000 Hz with API support for reading/writing positions/velocities and tracking keyboard input (`api.isKeyPressed`)
 - **Headless simulation** — run N ticks and return trajectory data without disturbing the live view
 - **MCP server integration** — external AI agents can build and control scenes via WebSocket
 

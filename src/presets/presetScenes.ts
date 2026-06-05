@@ -1065,6 +1065,14 @@ export const coinFlipPreset: SceneGraph = {
       joints: [
         { name: 'coin_free', type: 'free', initialVelocity: [0.0, 0.0, 5.0, 0.0, 15.0, 0.0], damping: 0.1 }
       ],
+      script: `// Coin Flip Script
+// Press Spacebar to dynamically flip and spin the coin again in mid-air!
+if (api.isKeyPressed('space')) {
+  api.setPosition([0, 0, 0.5]);
+  api.setVelocity([0, 0, 5.0]);
+  api.setAngularVelocity([0, 15.0, 0]);
+}
+`,
       geoms: [
         {
           name: 'coin_base',
