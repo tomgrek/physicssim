@@ -224,40 +224,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   setParentUnderSelected: (val) => set({ parentUnderSelected: val }),
   setEngine: (mujoco, model, data) => set({ mujoco, model, data, isLoaded: true }),
   
-  togglePlay: () => set((state) => {
-    const nextPlaying = !state.isPlaying;
-    if (nextPlaying && state.data && state.model && state.mujoco && state.data.time < 1e-5) {
-      const initVelJoints: { name: string; vel: number[]; type?: string }[] = [];
-      const traverseVel = (nodes: any[]) => {
-        if (!nodes) return;
-        for (const node of nodes) {
-          node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity, type: j.type }); });
-          traverseVel(node.children);
-        }
-      };
-      traverseVel(state.sceneGraph.nodes);
-      
-      let needForward = false;
-      for (const j of initVelJoints) {
-        const jntId = state.mujoco.mj_name2id(state.model, state.mujoco.mjtObj.mjOBJ_JOINT.value, j.name);
-        if (jntId !== -1) {
-          const dofAdr = state.model.jnt_dofadr[jntId];
-          for (let i = 0; i < j.vel.length; i++) {
-            let val = j.vel[i];
-            if (j.type === 'free' && i >= 3) {
-              val += (Math.random() - 0.5) * (Math.abs(val) * 0.1 + 0.5);
-            }
-            state.data.qvel[dofAdr + i] = val;
-          }
-          needForward = true;
-        }
-      }
-      if (needForward) {
-        state.mujoco.mj_forward(state.model, state.data);
-      }
-    }
-    return { isPlaying: nextPlaying };
-  }),
+  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
   setLoaded: (loaded) => set({ isLoaded: loaded }),
   setSettingsOpen: (open) => set({ isSettingsOpen: open }),
   setCameraView: (view) => set({ cameraView: view }),
@@ -952,11 +919,11 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         console.log("Initial geom_xpos:", Array.from(newData.geom_xpos).join(', '));
         
         // Inject generic initial velocities defined on any joints
-        const initVelJoints: { name: string; vel: number[]; type?: string }[] = [];
+        const initVelJoints: { name: string; vel: number[] }[] = [];
         const traverseVel = (nodes: any[]) => {
           if (!nodes) return;
           for (const node of nodes) {
-            node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity, type: j.type }); });
+            node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity }); });
             traverseVel(node.children);
           }
         };
@@ -968,12 +935,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
           if (jntId !== -1) {
             const dofAdr = newModel.jnt_dofadr[jntId];
             for (let i = 0; i < j.vel.length; i++) {
-              let val = j.vel[i];
-              if (j.type === 'free' && i >= 3) {
-                // Add a small amount of randomness to initial angular velocity (indices 3, 4, 5)
-                val += (Math.random() - 0.5) * (Math.abs(val) * 0.1 + 0.5);
-              }
-              newData.qvel[dofAdr + i] = val;
+              newData.qvel[dofAdr + i] = j.vel[i];
             }
             needForward = true;
           }

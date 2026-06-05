@@ -1065,6 +1065,17 @@ export const coinFlipPreset: SceneGraph = {
       joints: [
         { name: 'coin_free', type: 'free', initialVelocity: [0.0, 0.0, 5.0, 0.0, 15.0, 0.0], damping: 0.1 }
       ],
+      script: `// Coin Flip Script
+// On the very first frame of the simulation (time = 0),
+// add a small amount of random perturbation to the launch angular velocity.
+if (api.getTime() === 0) {
+  const currentAngVel = api.getAngularVelocity();
+  const wx = currentAngVel[0] + (Math.random() - 0.5) * (Math.abs(currentAngVel[0]) * 0.1 + 0.5);
+  const wy = currentAngVel[1] + (Math.random() - 0.5) * (Math.abs(currentAngVel[1]) * 0.1 + 0.5);
+  const wz = currentAngVel[2] + (Math.random() - 0.5) * (Math.abs(currentAngVel[2]) * 0.1 + 0.5);
+  api.setAngularVelocity([wx, wy, wz]);
+}
+`,
       geoms: [
         {
           name: 'coin_base',

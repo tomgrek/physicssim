@@ -77,12 +77,12 @@ export function useMCPBridge() {
             
             mujoco.mj_forward(headlessModel, headlessData);
 
-            // Inject initial velocities (including launch-time random spin on free joints)
-            const initVelJoints: { name: string; vel: number[]; type?: string }[] = [];
+            // Inject initial velocities (without compiler-level magic randomness)
+            const initVelJoints: { name: string; vel: number[] }[] = [];
             const traverseVel = (nodes: any[]) => {
               if (!nodes) return;
               for (const node of nodes) {
-                node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity, type: j.type }); });
+                node.joints?.forEach((j: any) => { if (j.initialVelocity) initVelJoints.push({ name: j.name, vel: j.initialVelocity }); });
                 traverseVel(node.children);
               }
             };
@@ -94,11 +94,7 @@ export function useMCPBridge() {
               if (jntId !== -1) {
                 const dofAdr = headlessModel.jnt_dofadr[jntId];
                 for (let i = 0; i < j.vel.length; i++) {
-                  let val = j.vel[i];
-                  if (j.type === 'free' && i >= 3) {
-                    val += (Math.random() - 0.5) * (Math.abs(val) * 0.1 + 0.5);
-                  }
-                  headlessData.qvel[dofAdr + i] = val;
+                  headlessData.qvel[dofAdr + i] = j.vel[i];
                 }
                 needForward = true;
               }
