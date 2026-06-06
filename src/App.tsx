@@ -110,8 +110,55 @@ function NoteCardOverlay({ card, isEditing, onToggleEdit, onToggleMinimize, onMa
 const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any, mujoco: any, isPlaying: boolean }) => {
 
   const accumulator = useRef<number>(0);
+  const stepCount = useRef<number>(0);
   const scriptCache = useRef<Record<string, Function>>({});
   const sceneGraph = useStore(state => state.sceneGraph);
+
+  // Cached name→id maps rebuilt once per model compile, not every step
+  const bodyIdCache = useRef<Record<string, number>>({});
+  const jointIdCache = useRef<Record<string, number>>({});
+  const geomNameCache = useRef<Record<number, string>>({});
+  const geomIdCache = useRef<Record<string, number>>({});
+  const actuatorIdCache = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    if (!model || !mujoco) return;
+    const bCache: Record<string, number> = {};
+    const jCache: Record<string, number> = {};
+    const gCache: Record<number, string> = {};
+    const collectIds = (nodes: any[]) => {
+      if (!nodes) return;
+      for (const node of nodes) {
+        const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.id);
+        if (bId !== -1) {
+          bCache[node.id] = bId;
+          if (node.name && node.name !== node.id) bCache[node.name] = bId;
+        }
+        node.joints?.forEach((j: any) => {
+          const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, j.name);
+          if (jId !== -1) jCache[j.name] = jId;
+        });
+        collectIds(node.children || []);
+      }
+    };
+    collectIds(sceneGraph.nodes);
+    const giCache: Record<string, number> = {};
+    for (let g = 0; g < model.ngeom; g++) {
+      const name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM.value, g);
+      gCache[g] = name || `geom_${g}`;
+      if (name) giCache[name] = g;
+    }
+    const aCache: Record<string, number> = {};
+    for (let a = 0; a < model.nu; a++) {
+      const name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR.value, a);
+      if (name) aCache[name] = a;
+    }
+    bodyIdCache.current = bCache;
+    jointIdCache.current = jCache;
+    geomNameCache.current = gCache;
+    geomIdCache.current = giCache;
+    actuatorIdCache.current = aCache;
+  }, [model, mujoco]);
 
   const pressedKeys = useRef<Set<string>>(new Set());
 
@@ -171,7 +218,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
         // Generic aerodynamic logic for any geom type (box, mesh, ellipsoid, etc.)
         const geom = node.geoms?.[0];
         if (geom) {
-          const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
+          const bId = bodyIdCache.current[node.id] ?? bodyIdCache.current[node.name] ?? -1;
           if (bId !== -1) {
             // Find parent independent body ID (ancestor with degrees of freedom)
             let pId = bId;
@@ -179,7 +226,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
               pId = model.body_parentid[pId];
             }
 
-            const gId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM.value, geom.name || '');
+            const gId = geomIdCache.current[geom.name || ''] ?? -1;
             let geomWorldX = data.xpos[bId * 3 + 0];
             let geomWorldY = data.xpos[bId * 3 + 1];
             let geomWorldZ = data.xpos[bId * 3 + 2];
@@ -338,10 +385,15 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           }
         }
  
+        const _bCache = bodyIdCache.current;
+        const _jCache = jointIdCache.current;
+        const _resolveBody = (name: string) => _bCache[name] ?? mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, name);
+        const _resolveJoint = (name: string) => _jCache[name] ?? mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, name);
+
         const api = {
           id: node.id,
           name: node.name,
- 
+
           // Returns true if the key (e.g. 'space', 'w', 'arrowup') is currently pressed
           isKeyPressed: (keyName: string) => {
             if (!keyName) return false;
@@ -354,7 +406,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
             if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
             const joint = targetNode.joints[0];
-            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+            const jId = _resolveJoint(joint.name);
             if (jId !== -1) {
               const qposadr = model.jnt_qposadr[jId];
               if (joint.type === 'free') {
@@ -382,7 +434,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
             if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
             const joint = targetNode.joints[0];
-            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+            const jId = _resolveJoint(joint.name);
             if (jId !== -1) {
               const dofadr = model.jnt_dofadr[jId];
               if (joint.type === 'free') {
@@ -403,7 +455,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             const targetNode = findNodeByIdInLoop(sceneGraph.nodes, bodyName);
             if (!targetNode || !targetNode.joints || targetNode.joints.length === 0) return;
             const joint = targetNode.joints[0];
-            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, joint.name);
+            const jId = _resolveJoint(joint.name);
             if (jId !== -1) {
               const dofadr = model.jnt_dofadr[jId];
               if (joint.type === 'free') {
@@ -427,7 +479,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Reads physical position [X, Y, Z] of any body in the scene
           getPosition: (bodyName = node.id) => {
             if (!model || !mujoco || !data) return [0, 0, 0];
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             if (bId !== -1) {
               return [
                 data.xpos[bId * 3],
@@ -441,7 +493,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Reads linear velocity [VX, VY, VZ] of any body
           getVelocity: (bodyName = node.id) => {
             if (!model || !mujoco || !data) return [0, 0, 0];
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             if (bId !== -1) {
               return [
                 data.cvel[bId * 6 + 3], // linear velocity X
@@ -455,7 +507,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Reads angular velocity [WX, WY, WZ] of any body
           getAngularVelocity: (bodyName = node.id) => {
             if (!model || !mujoco || !data) return [0, 0, 0];
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             if (bId !== -1) {
               return [
                 data.cvel[bId * 6 + 0], // angular X
@@ -469,14 +521,14 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Reads total body mass in kg
           getMass: (bodyName = node.id) => {
             if (!model || !mujoco || !data) return 0;
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             return bId !== -1 ? model.body_mass[bId] : 0;
           },
 
           // Reads 1D joint position (translation in m for sliders, angle in rad for hinges)
           getJointPosition: (jointName: string) => {
             if (!model || !mujoco || !data) return 0;
-            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+            const jId = _resolveJoint(jointName);
             if (jId !== -1) {
               const adr = model.jnt_qposadr[jId];
               return data.qpos[adr];
@@ -487,7 +539,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Reads 1D joint velocity (translation speed for sliders, angular velocity for hinges)
           getJointVelocity: (jointName: string) => {
             if (!model || !mujoco || !data) return 0;
-            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+            const jId = _resolveJoint(jointName);
             if (jId !== -1) {
               const adr = model.jnt_dofadr[jId];
               return data.qvel[adr];
@@ -498,7 +550,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Applies a direct external force vector [FX, FY, FZ] to any body
           applyForce: (forceVec: number[], bodyName = node.id) => {
             if (!model || !mujoco || !data || !Array.isArray(forceVec)) return;
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             if (bId !== -1) {
               // xfrc_applied layout: [force_x, force_y, force_z, torque_x, torque_y, torque_z]
               data.xfrc_applied[bId * 6 + 0] += forceVec[0] || 0;
@@ -510,7 +562,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Applies a world-frame torque vector [TX, TY, TZ] to any body
           applyTorque: (torqueVec: number[], bodyName = node.id) => {
             if (!model || !mujoco || !data || !Array.isArray(torqueVec)) return;
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             if (bId !== -1) {
               // xfrc_applied layout: [force_x, force_y, force_z, torque_x, torque_y, torque_z]
               data.xfrc_applied[bId * 6 + 3] += torqueVec[0] || 0;
@@ -523,7 +575,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Use this to transform vectors between world and body frames
           getOrientation: (bodyName = node.id) => {
             if (!model || !mujoco || !data) return [1,0,0, 0,1,0, 0,0,1];
-            const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
+            const bId = _resolveBody(bodyName);
             if (bId !== -1) {
               const o = bId * 9;
               return [
@@ -538,7 +590,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Applies an internal joint-aligned force (torque for hinges, linear thrust for sliders)
           applyJointForce: (jointName: string, forceVal: number) => {
             if (!model || !mujoco || !data || typeof forceVal !== 'number') return;
-            const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, jointName);
+            const jId = _resolveJoint(jointName);
             if (jId !== -1) {
               const adr = model.jnt_dofadr[jId];
               data.qfrc_applied[adr] += forceVal;
@@ -548,7 +600,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           // Sets active actuator control input (for motor speed/torque)
           setActuatorControl: (actuatorName: string, ctrlVal: number) => {
             if (!model || !mujoco || !data || typeof ctrlVal !== 'number') return;
-            const actId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR.value, actuatorName);
+            const actId = actuatorIdCache.current[actuatorName] ?? -1;
             if (actId !== -1) {
               data.ctrl[actId] = ctrlVal;
             }
@@ -615,7 +667,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           let targetBodyName = draggedNodeId;
           let bestMass = -1;
           const findHeaviestDescendant = (nodeId: string) => {
-            const bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, nodeId);
+            const bid = bodyIdCache.current[nodeId] ?? -1;
             if (bid !== -1) {
               const m = model.body_mass[bid] || 0;
               if (m > bestMass) { bestMass = m; targetBodyName = nodeId; }
@@ -634,7 +686,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
           };
           findHeaviestDescendant(draggedNodeId);
 
-          const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, targetBodyName);
+          const bId = bodyIdCache.current[targetBodyName] ?? -1;
           if (bId !== -1) {
             const bx = data.xpos[bId * 3];
             const by = data.xpos[bId * 3 + 1];
@@ -683,7 +735,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             if (node.joints) {
               for (const joint of node.joints) {
                 if (joint.type === 'free' && joint.damping !== undefined && joint.damping > 0) {
-                  const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, node.name || node.id);
+                  const bId = bodyIdCache.current[node.id] ?? bodyIdCache.current[node.name] ?? -1;
                   if (bId !== -1) {
                     const wx = data.cvel[bId * 6 + 0];
                     const wy = data.cvel[bId * 6 + 1];
@@ -716,20 +768,23 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
         applyFreeJointDamping(sceneGraph.nodes);
 
         mujoco.mj_step(model, data);
-        
-        // Record physics history frame
+        stepCount.current++;
+
+        // Record physics history frame — throttled to every 10 steps (~100Hz) to avoid GC pressure
         if (!(window as any)._physics_history) {
           (window as any)._physics_history = [];
         }
-        if (data && data.time !== undefined && model && mujoco) {
+        if (stepCount.current % 10 === 0 && data && data.time !== undefined && model && mujoco) {
           const bodies: Record<string, any> = {};
           const joints: Record<string, any> = {};
+          const bCache = bodyIdCache.current;
+          const jCache = jointIdCache.current;
+          const gCache = geomNameCache.current;
           const collectNodeData = (nodesList: any[]) => {
             if (!nodesList) return;
             for (const node of nodesList) {
-              const bodyName = node.id;
-              const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
-              if (bId !== -1) {
+              const bId = bCache[node.id];
+              if (bId !== undefined) {
                 const wx = data.cvel[bId * 6 + 0];
                 const wy = data.cvel[bId * 6 + 1];
                 const wz = data.cvel[bId * 6 + 2];
@@ -739,28 +794,23 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
                 const x_pos = data.xpos[bId * 3 + 0];
                 const y_pos = data.xpos[bId * 3 + 1];
                 const z_pos = data.xpos[bId * 3 + 2];
-                
                 const vx = vO_x + (wy * z_pos - wz * y_pos);
                 const vy = vO_y + (wz * x_pos - wx * z_pos);
                 const vz = vO_z + (wx * y_pos - wy * x_pos);
-
-                bodies[bodyName] = {
+                bodies[node.id] = {
                   pos: [x_pos, y_pos, z_pos],
                   vel: [vx, vy, vz],
                   angvel: [wx, wy, wz],
                   xfrc_applied: [
-                    data.xfrc_applied[bId * 6 + 0],
-                    data.xfrc_applied[bId * 6 + 1],
-                    data.xfrc_applied[bId * 6 + 2],
-                    data.xfrc_applied[bId * 6 + 3],
-                    data.xfrc_applied[bId * 6 + 4],
-                    data.xfrc_applied[bId * 6 + 5]
+                    data.xfrc_applied[bId * 6 + 0], data.xfrc_applied[bId * 6 + 1],
+                    data.xfrc_applied[bId * 6 + 2], data.xfrc_applied[bId * 6 + 3],
+                    data.xfrc_applied[bId * 6 + 4], data.xfrc_applied[bId * 6 + 5]
                   ]
                 };
               }
               node.joints?.forEach((j: any) => {
-                const jId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, j.name);
-                if (jId !== -1) {
+                const jId = jCache[j.name];
+                if (jId !== undefined) {
                   const qposadr = model.jnt_qposadr[jId];
                   const dofadr = model.jnt_dofadr[jId];
                   joints[j.name] = {
@@ -774,19 +824,22 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             }
           };
           collectNodeData(sceneGraph.nodes);
-          
+
           const contacts: any[] = [];
-          for (let c = 0; c < data.contact.size(); c++) {
+          const ncon = data.contact.size();
+          for (let c = 0; c < ncon; c++) {
             const contact = data.contact.get(c);
-            const g1 = contact.geom1;
-            const g2 = contact.geom2;
-            const geom1Name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM.value, g1) || `geom_${g1}`;
-            const geom2Name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM.value, g2) || `geom_${g2}`;
-            contacts.push({
-              geom1: geom1Name,
-              geom2: geom2Name,
-              dist: contact.dist
-            });
+            if (contact) {
+              const g1 = contact.geom1;
+              const g2 = contact.geom2;
+              const dist = contact.dist;
+              contacts.push({
+                geom1: gCache[g1] ?? `geom_${g1}`,
+                geom2: gCache[g2] ?? `geom_${g2}`,
+                dist
+              });
+              contact.delete();
+            }
           }
 
           (window as any)._physics_history.push({
@@ -1361,6 +1414,16 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
 // Dynamic glowing pulley cable/rope renderer
 const PulleyRopesRenderer = ({ model, data, mujoco, sceneGraph }: any) => {
   const lineRefs = useRef<{ [ropeId: string]: any }>({});
+  const bodyIdCache = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!model || !mujoco) return;
+    const c: Record<string, number> = {};
+    for (let b = 0; b < model.nbody; b++) {
+      const name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY.value, b);
+      if (name) c[name] = b;
+    }
+    bodyIdCache.current = c;
+  }, [model, mujoco]);
   
   // Find all pulley rope nodes in the scene
   const pulleyRopes = useMemo(() => {
@@ -1401,8 +1464,8 @@ const PulleyRopesRenderer = ({ model, data, mujoco, sceneGraph }: any) => {
 
     for (const rope of pulleyRopes) {
       try {
-        const leftId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, rope.leftTargetId);
-        const rightId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, rope.rightTargetId);
+        const leftId = bodyIdCache.current[rope.leftTargetId] ?? -1;
+        const rightId = bodyIdCache.current[rope.rightTargetId] ?? -1;
 
         if (leftId === -1 || rightId === -1) continue;
 
@@ -1418,7 +1481,7 @@ const PulleyRopesRenderer = ({ model, data, mujoco, sceneGraph }: any) => {
 
         if (rope.pulleyWheelId) {
           // Pulley wheel present: arc-over-wheel geometry
-          const wheelId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, rope.pulleyWheelId);
+          const wheelId = bodyIdCache.current[rope.pulleyWheelId] ?? -1;
           if (wheelId === -1) {
             // Wheel not yet spawned — fall back to straight line
             points.push(new THREE.Vector3(lx, ly, lz));
@@ -1533,6 +1596,16 @@ const MouseDragForceRenderer = ({ model, data, mujoco }: any) => {
   const draggedNodeId = useStore((state) => state.draggedNodeId);
   const dragTarget = useStore((state) => state.dragTarget);
   const lineRef = useRef<any>(null);
+  const bodyIdCache = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!model || !mujoco) return;
+    const c: Record<string, number> = {};
+    for (let b = 0; b < model.nbody; b++) {
+      const name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY.value, b);
+      if (name) c[name] = b;
+    }
+    bodyIdCache.current = c;
+  }, [model, mujoco]);
 
   useFrame(() => {
     const activeModel = useStore.getState().model;
@@ -1542,7 +1615,7 @@ const MouseDragForceRenderer = ({ model, data, mujoco }: any) => {
     if (!model || !data || !mujoco || !draggedNodeId || !dragTarget || !lineRef.current) return;
 
     try {
-      const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, draggedNodeId);
+      const bId = bodyIdCache.current[draggedNodeId] ?? -1;
       if (bId === -1) return;
 
       const px = data.xpos[bId * 3];

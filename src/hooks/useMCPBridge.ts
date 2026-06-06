@@ -610,15 +610,19 @@ export function useMCPBridge() {
               const contacts: any[] = [];
               for (let c = 0; c < headlessData.contact.size(); c++) {
                 const contact = headlessData.contact.get(c);
-                const g1 = contact.geom1;
-                const g2 = contact.geom2;
-                const geom1Name = mujoco.mj_id2name(headlessModel, mujoco.mjtObj.mjOBJ_GEOM.value, g1) || `geom_${g1}`;
-                const geom2Name = mujoco.mj_id2name(headlessModel, mujoco.mjtObj.mjOBJ_GEOM.value, g2) || `geom_${g2}`;
-                contacts.push({
-                  geom1: geom1Name,
-                  geom2: geom2Name,
-                  dist: contact.dist
-                });
+                if (contact) {
+                  const g1 = contact.geom1;
+                  const g2 = contact.geom2;
+                  const dist = contact.dist;
+                  const geom1Name = mujoco.mj_id2name(headlessModel, mujoco.mjtObj.mjOBJ_GEOM.value, g1) || `geom_${g1}`;
+                  const geom2Name = mujoco.mj_id2name(headlessModel, mujoco.mjtObj.mjOBJ_GEOM.value, g2) || `geom_${g2}`;
+                  contacts.push({
+                    geom1: geom1Name,
+                    geom2: geom2Name,
+                    dist
+                  });
+                  contact.delete();
+                }
               }
 
               trajectory.push({
