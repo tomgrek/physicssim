@@ -68,7 +68,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
     scriptCache.current = {};
   }, [sceneGraph]);
 
-  const executeScripts = (nodes: any[]) => {
+  const executeScripts = (nodes: any[], aeroDiagnostics?: Record<string, any>) => {
     if (!nodes) return;
     for (const node of nodes) {
       if (node.isAerodynamic) {
@@ -83,12 +83,30 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
               pId = model.body_parentid[pId];
             }
 
-            const vx = data.cvel[bId * 6 + 3];
-            const vy = data.cvel[bId * 6 + 4];
-            const vz = data.cvel[bId * 6 + 5];
+            const gId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM.value, geom.name || '');
+            let geomWorldX = data.xpos[bId * 3 + 0];
+            let geomWorldY = data.xpos[bId * 3 + 1];
+            let geomWorldZ = data.xpos[bId * 3 + 2];
+            if (gId !== -1) {
+              geomWorldX = data.geom_xpos[gId * 3 + 0];
+              geomWorldY = data.geom_xpos[gId * 3 + 1];
+              geomWorldZ = data.geom_xpos[gId * 3 + 2];
+            }
+
+            const rx = geomWorldX - data.xpos[pId * 3 + 0];
+            const ry = geomWorldY - data.xpos[pId * 3 + 1];
+            const rz = geomWorldZ - data.xpos[pId * 3 + 2];
+
             const wx = data.cvel[bId * 6 + 0];
             const wy = data.cvel[bId * 6 + 1];
             const wz = data.cvel[bId * 6 + 2];
+            const vO_x = data.cvel[bId * 6 + 3];
+            const vO_y = data.cvel[bId * 6 + 4];
+            const vO_z = data.cvel[bId * 6 + 5];
+
+            const vx = vO_x + (wy * rz - wz * ry);
+            const vy = vO_y + (wz * rx - wx * rz);
+            const vz = vO_z + (wx * ry - wy * rx);
             
             const o = bId * 9;
             const noseX = data.xmat[o+0], noseY = data.xmat[o+3], noseZ = data.xmat[o+6];
@@ -164,22 +182,6 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
               const ty_roll = rollRestoring * noseY;
               const tz_roll = rollRestoring * noseZ;
               
-              // Query geom position for lever arm calculation
-              const gId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM.value, geom.name || '');
-              let geomWorldX = data.xpos[bId * 3 + 0];
-              let geomWorldY = data.xpos[bId * 3 + 1];
-              let geomWorldZ = data.xpos[bId * 3 + 2];
-              if (gId !== -1) {
-                geomWorldX = data.geom_xpos[gId * 3 + 0];
-                geomWorldY = data.geom_xpos[gId * 3 + 1];
-                geomWorldZ = data.geom_xpos[gId * 3 + 2];
-              }
-              
-              // Lever arm relative to parent independent body COM
-              const rx = geomWorldX - data.xpos[pId * 3 + 0];
-              const ry = geomWorldY - data.xpos[pId * 3 + 1];
-              const rz = geomWorldZ - data.xpos[pId * 3 + 2];
-              
               // Torque due to force lever arm: r x F
               const tx_lever = ry * fz - rz * fy;
               const ty_lever = rz * fx - rx * fz;
@@ -194,6 +196,28 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
               data.xfrc_applied[pId * 6 + 3] += tx_aero + tx_roll + tx_lever;
               data.xfrc_applied[pId * 6 + 4] += ty_aero + ty_roll + ty_lever;
               data.xfrc_applied[pId * 6 + 5] += tz_aero + tz_roll + tz_lever;
+
+              if (aeroDiagnostics) {
+                aeroDiagnostics[node.name || node.id] = {
+                  relSpeed,
+                  alpha: alpha * 180 / Math.PI,
+                  CL,
+                  CD,
+                  force: [fx, fy, fz],
+                  torque: [tx_aero + tx_roll + tx_lever, ty_aero + ty_roll + ty_lever, tz_aero + tz_roll + tz_lever]
+                };
+              }
+            } else {
+              if (aeroDiagnostics) {
+                aeroDiagnostics[node.name || node.id] = {
+                  relSpeed,
+                  alpha: 0,
+                  CL: 0,
+                  CD: 0,
+                  force: [0, 0, 0],
+                  torque: [0, 0, 0]
+                };
+              }
             }
             
             // Rotational damping (applied to the parent independent body)
@@ -459,7 +483,7 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
       }
 
       if (node.children) {
-        executeScripts(node.children);
+        executeScripts(node.children, aeroDiagnostics);
       }
     }
   };
@@ -553,7 +577,8 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
         }
         
         // Execute active control scripts immediately prior to physics iteration
-        executeScripts(sceneGraph.nodes);
+        const aeroDiagnostics: Record<string, any> = {};
+        executeScripts(sceneGraph.nodes, aeroDiagnostics);
 
         // Apply physical damping to free joints (since MuJoCo free joints don't natively support damping attributes)
         const applyFreeJointDamping = (nodes: any[]) => {
@@ -609,21 +634,31 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
               const bodyName = node.id;
               const bId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, bodyName);
               if (bId !== -1) {
+                const wx = data.cvel[bId * 6 + 0];
+                const wy = data.cvel[bId * 6 + 1];
+                const wz = data.cvel[bId * 6 + 2];
+                const vO_x = data.cvel[bId * 6 + 3];
+                const vO_y = data.cvel[bId * 6 + 4];
+                const vO_z = data.cvel[bId * 6 + 5];
+                const x_pos = data.xpos[bId * 3 + 0];
+                const y_pos = data.xpos[bId * 3 + 1];
+                const z_pos = data.xpos[bId * 3 + 2];
+                
+                const vx = vO_x + (wy * z_pos - wz * y_pos);
+                const vy = vO_y + (wz * x_pos - wx * z_pos);
+                const vz = vO_z + (wx * y_pos - wy * x_pos);
+
                 bodies[bodyName] = {
-                  pos: [
-                    data.xpos[bId * 3],
-                    data.xpos[bId * 3 + 1],
-                    data.xpos[bId * 3 + 2]
-                  ],
-                  vel: [
-                    data.cvel[bId * 6 + 3],
-                    data.cvel[bId * 6 + 4],
-                    data.cvel[bId * 6 + 5]
-                  ],
-                  angvel: [
-                    data.cvel[bId * 6 + 0],
-                    data.cvel[bId * 6 + 1],
-                    data.cvel[bId * 6 + 2]
+                  pos: [x_pos, y_pos, z_pos],
+                  vel: [vx, vy, vz],
+                  angvel: [wx, wy, wz],
+                  xfrc_applied: [
+                    data.xfrc_applied[bId * 6 + 0],
+                    data.xfrc_applied[bId * 6 + 1],
+                    data.xfrc_applied[bId * 6 + 2],
+                    data.xfrc_applied[bId * 6 + 3],
+                    data.xfrc_applied[bId * 6 + 4],
+                    data.xfrc_applied[bId * 6 + 5]
                   ]
                 };
               }
@@ -634,7 +669,8 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
                   const dofadr = model.jnt_dofadr[jId];
                   joints[j.name] = {
                     pos: data.qpos[qposadr],
-                    vel: data.qvel[dofadr]
+                    vel: data.qvel[dofadr],
+                    qfrc_applied: data.qfrc_applied[dofadr]
                   };
                 }
               });
@@ -642,10 +678,27 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
             }
           };
           collectNodeData(sceneGraph.nodes);
+          
+          const contacts: any[] = [];
+          for (let c = 0; c < data.contact.size(); c++) {
+            const contact = data.contact.get(c);
+            const g1 = contact.geom1;
+            const g2 = contact.geom2;
+            const geom1Name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM.value, g1) || `geom_${g1}`;
+            const geom2Name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM.value, g2) || `geom_${g2}`;
+            contacts.push({
+              geom1: geom1Name,
+              geom2: geom2Name,
+              dist: contact.dist
+            });
+          }
+
           (window as any)._physics_history.push({
             time: data.time,
             bodies,
-            joints
+            joints,
+            contacts,
+            aeroDiagnostics
           });
           if ((window as any)._physics_history.length > 5000) {
             (window as any)._physics_history.shift();
@@ -1933,6 +1986,8 @@ function App() {
                 <option value="coin_flip">🪙 Coin Flip</option>
                 <option value="windmill">💨 Wind Turbine</option>
                 <option value="physics_only_windmill">💨 Wind Turbine (No Aero)</option>
+                <option value="traditional_windmill">💨 Traditional Windmill (4-Blade)</option>
+                <option value="drone">🛸 Quadcopter Drone</option>
               </optgroup>
 
               {/* User Presets */}
