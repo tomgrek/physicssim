@@ -30,14 +30,16 @@
     "physics_toggle_play": "Toggle play/pause of the physics simulation.",
     "physics_reset": "Reset the physics simulation to its initial state.",
     "physics_list_presets": "Return available physics scene preset names.",
-    "physics_load_preset": "Load a physics scene preset. Valid presets: pendulum, cubes, gears, machine, rack_pinion, inclined_plane, pulley_system, cartpole, newtons_cradle, suspension_bridge, paper_plane, monkey_head, golden_gate, golden_gate_mesh, mesh_collision, coin_flip, windmill, physics_only_windmill, traditional_windmill, drone.",
-    "physics_set_environment": "Update physics environment. gravityZ is negative for downward gravity (e.g. -9.81). windX/windY add lateral fluid drag. density adds buoyancy. floorFriction controls ground grip. All fields optional.",
+    "physics_load_preset": "Load a physics scene preset. Valid presets: pendulum, cubes, gears, machine, rack_pinion, inclined_plane, pulley_system, cartpole, newtons_cradle, suspension_bridge, paper_plane, monkey_head, golden_gate, golden_gate_mesh, mesh_collision, coin_flip, windmill, physics_only_windmill, traditional_windmill, drone, bouncy_balls.",
+    "physics_set_environment": "Update physics environment. gravityZ is negative for downward gravity (e.g. -9.81). windX/windY add lateral fluid drag. density adds buoyancy. floorFriction controls ground grip. floorBounce: 0=no bounce (default), 1=maximum bounce — sets floor dampingRatio to (1-floorBounce), averaged with each contacting geom's own dampingRatio. All fields optional.",
     "physics_update_scene": "Replace the full scene graph. Must match the SceneGraph type: { nodes: SceneNode[] }. Full control but requires complete valid structure.",
     "physics_get_schema": "Return the full schema describing every geom type, joint type, and field. Call this first when building scenes.",
     "physics_build_scene": "Build and load a scene from simplified body descriptors. Auto-fills safe defaults. Easier than physics_update_scene.",
     "physics_run_headless": "Run the physics simulation headlessly for N ticks. Returns trajectory: [{time, bodies:{name:{pos,vel,angvel,xfrc_applied}}, joints:{name:{pos,vel,qfrc_applied}}, contacts:[{geom1,geom2,dist}], aeroDiagnostics:{name:{relSpeed,alpha,CL,CD,force,torque}}}], warnings:[string]. Does not affect the live view. Use this to verify scene behaviour programmatically — e.g. check a projectile lands in the right place, a pendulum reaches the right angle, or a body comes to rest at the expected position — before calling physics_play for visual presentation.",
     "physics_get_history": "Return the complete array of physical telemetry history up to 5000 frames (contains time, bodies, joints, contacts, and aeroDiagnostics). Large payload.",
-    "physics_get_telemetry": "Return only the latest single frame of simulation telemetry (contains time, bodies: { name: { pos, vel, angvel, xfrc_applied } }, joints: { name: { pos, vel, qfrc_applied } }, contacts, and aeroDiagnostics). Lightweight alternative to physics_get_history."
+    "physics_get_telemetry": "Return only the latest single frame of simulation telemetry (contains time, bodies: { name: { pos, vel, angvel, xfrc_applied } }, joints: { name: { pos, vel, qfrc_applied } }, contacts, and aeroDiagnostics). Lightweight alternative to physics_get_history.",
+    "physics_get_note_cards": "Return the current array of note card overlays. Each card has { id, markdown, minimized, x, y }.",
+    "physics_set_note_cards": "Replace the note card overlays. Pass noteCards: [{ id, markdown, minimized, x, y }]. Use to add explanatory notes, update existing cards, or clear all cards (pass an empty array)."
   },
   "schema": {
     "geomTypes": ["box", "sphere", "capsule", "cylinder", "ellipsoid", "plane", "mesh"],
@@ -66,12 +68,12 @@
       "euler": "[roll,pitch,yaw] degrees — local rotation, alternative to quat",
       "fromto": "[x1,y1,z1, x2,y2,z2] — capsule/cylinder endpoints in local space, overrides size/pos/quat",
       "mass": "number — override density-based mass for this geom",
-      "friction": "[slide, spin, roll] — contact friction coefficients",
+      "friction": "[slide, spin, roll] — contact friction coefficients. slide: tangential sliding (0=icy, 2=rubbery). spin: torsional around contact normal (typical 0.005). roll: rolling resistance (typical 0.0001).",
       "contype": "integer bitmask — collision group this geom belongs to",
       "conaffinity": "integer bitmask — which groups this geom collides with",
       "condim": "1|3|4|6 — contact dimensionality",
-      "solref": "[timeconst, dampratio] — constraint solver reference",
-      "solimp": "[d0,d1,width,midpoint,power] — constraint solver impedance",
+      "solref": "[timeconst_s, dampingRatio] — contact spring parameters. timeconst_s: spring time constant in seconds, must be >= 5x timestep (0.005s minimum). Lower = stiffer contact. dampingRatio: 1.0 = critically damped (no bounce), 0.0 = underdamped (max bounce), ~0.2 = lively bouncing. Contact between two geoms averages both dampingRatios — set floor to 0.0 and ball to 0.2 to get 0.1 effective ratio. Default (no solref set): [0.02, 1.0] = stiff, no bounce.",
+      "solimp": "[d0, d1, width, midpoint, power] — contact impedance. d0: min impedance (0.8-0.99), d1: max impedance (0.99-0.9999), width: transition width, midpoint: where transition is centered, power: curve shape. Higher d0/d1 = harder contact, less penetration. Typical bouncy: [0.99, 0.9999, 0.0001, 0.5, 2].",
       "vertices": "number[] — mesh only: flat [x0,y0,z0,...] in Three.js Y-up space (X=right, Y=up, Z=toward camera)",
       "faces": "number[] — mesh only: flat triangle indices [i0,j0,k0,...] with outward-facing (CCW) winding",
       "dynamic": "boolean — if true, mesh participates fully in simulation and collision (convex hull). Requires renderVertices.",
@@ -107,6 +109,13 @@
       "limited": "boolean — whether range limits are active",
       "range": "[min,max] — joint limits in degrees (hinge) or meters (slide)",
       "actuator": "{ type:'velocity'|'motor', kv?:number, gear?:number, ctrlValue?:number }"
+    },
+    "contactPhysicsTips": {
+      "howContactParamsAreBlended": "When two geoms touch, MuJoCo averages their solref and solimp values. This means the floor's dampingRatio directly dilutes a ball's bounce: ball dampingRatio 0.2 + floor dampingRatio 0.0 = effective 0.1 (bouncy). Ball 0.2 + floor 1.0 = effective 0.6 (dead). The built-in floor uses dampingRatio=0.0 so it does not kill bounce.",
+      "defaultContactParams": "Geoms with no solref/solimp use the scene default: solref=[0.02, 1.0] (stiff, no bounce), solimp=[0.99, 0.9999, 0.0001, 0.5, 2]. Only set solref/solimp on geoms where you want non-default behaviour.",
+      "makingBouncyObjects": "Set solref=[0.04, 0.2] and solimp=[0.99, 0.9999, 0.0001, 0.5, 2] on the geom. dampingRatio 0.2 gives lively but controlled bounce. The UI Bounciness slider (under Physical Material in the properties panel) sets dampingRatio directly, keeping timeconst at 0.04s.",
+      "stabilityLimit": "solref[0] (timeconst) must be at least 5x the simulation timestep (0.001s), so minimum 0.005s. Lower values make the contact spring too stiff for the integrator and cause energy explosion. 0.04s is a safe, stiff-feeling default.",
+      "frictionComponents": "friction=[slide, spin, roll]. slide (0-2): tangential friction — 0=icy, 1=normal, 2=rubbery. spin (0-0.05): torsional friction around contact normal. roll (0-0.01): rolling resistance — keeps spheres from rolling forever."
     },
     "meshNotes": {
       "staticMesh": "No dynamic field (or dynamic:false). VISUAL ONLY — does not simulate, move, or collide. Vertices in Three.js Y-up world space. Good for scenery, decorative structures, visual shells around primitive collision proxies.",

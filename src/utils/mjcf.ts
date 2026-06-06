@@ -68,7 +68,8 @@ export const compileToMJCF = (
   floorFriction: number = 1.0,
   windX: number = 0,
   windY: number = 0,
-  density: number = 0
+  density: number = 0,
+  floorBounce: number = 0.0
 ) => {
   const sceneCopy = JSON.parse(JSON.stringify(scene)) as SceneGraph;
 
@@ -347,11 +348,11 @@ export const compileToMJCF = (
 <mujoco model="dynamic_scene">
   <option timestep="0.001" gravity="0 0 ${gravityZ}" wind="${windX} ${windY} 0" density="${density}" iterations="50" tolerance="1e-10" ls_iterations="50" ls_tolerance="1e-12" />${assetXml}
   <default>
-    <geom solref="-10000 -1000" solimp="0.99 0.9999 0.0001 0.5 2" />
+    <geom solref="0.02 1" solimp="0.99 0.9999 0.0001 0.5 2" />
   </default>
   <worldbody>
     <light directional="true" pos="-0.5 0.5 3" dir="0.5 -0.5 -3" diffuse="0.8 0.8 0.8" />
-    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.9 0.9 0.9 1" friction="${floorFriction} 0.005 0.0001" solref="-10000 -1000" solimp="0.99 0.9999 0.0001 0.5 2" />
+    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.9 0.9 0.9 1" friction="${floorFriction} 0.005 0.0001" solref="0.02 ${Math.max(0, 1 - floorBounce).toFixed(3)}" solimp="0.99 0.9999 0.0001 0.5 2" />
     
     ${sceneCopy.nodes.map(buildNode).join('\n')}
   </worldbody>

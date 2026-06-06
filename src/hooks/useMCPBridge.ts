@@ -57,6 +57,7 @@ export function useMCPBridge() {
             windY:        store.windY,
             density:      store.density,
             floorFriction: store.floorFriction,
+            floorBounce:   store.floorBounce,
           };
 
         case 'GET_SCENE':
@@ -672,7 +673,22 @@ export function useMCPBridge() {
           return ['empty', 'pendulum', 'cubes', 'gears', 'machine', 'rack_pinion',
                   'inclined_plane', 'pulley_system', 'cartpole', 'newtons_cradle',
                   'suspension_bridge', 'paper_plane', 'monkey_head',
-                  'golden_gate', 'golden_gate_mesh', 'mesh_collision'];
+                  'golden_gate', 'golden_gate_mesh', 'mesh_collision',
+                  'coin_flip', 'windmill', 'physics_only_windmill', 'traditional_windmill',
+                  'drone', 'bouncy_balls'];
+
+        case 'GET_NOTE_CARDS': {
+          const getter = (window as any)._physics_getNoteCards;
+          return { ok: true, noteCards: getter ? getter() : [] };
+        }
+
+        case 'SET_NOTE_CARDS': {
+          const setter = (window as any)._physics_setNoteCards;
+          if (!setter) return { ok: false, error: 'Note card state not available' };
+          if (!Array.isArray(msg.noteCards)) return { ok: false, error: 'noteCards must be an array' };
+          setter(msg.noteCards);
+          return { ok: true };
+        }
 
         case 'UPDATE_SCENE': {
           if (!msg.sceneGraph) return { ok: false, error: 'Missing sceneGraph' };
@@ -681,13 +697,14 @@ export function useMCPBridge() {
         }
 
         case 'SET_ENVIRONMENT': {
-          const { gravityZ, windX, windY, density, floorFriction } = msg;
+          const { gravityZ, windX, windY, density, floorFriction, floorBounce } = msg;
           const env: Record<string, number> = {};
           if (gravityZ !== undefined) env.gravityZ = gravityZ;
           if (windX !== undefined) env.windX = windX;
           if (windY !== undefined) env.windY = windY;
           if (density !== undefined) env.density = density;
           if (floorFriction !== undefined) env.floorFriction = floorFriction;
+          if (floorBounce !== undefined) env.floorBounce = floorBounce;
           store.setEnvironment(env);
           return { ok: true };
         }
@@ -715,12 +732,12 @@ export function useMCPBridge() {
               euler:       'number[3] — [roll, pitch, yaw] in degrees, alternative to quat',
               fromto:      'number[6] — [x1,y1,z1, x2,y2,z2] for capsule/cylinder endpoints (overrides size/pos/quat)',
               mass:        'number — if set, overrides density-based mass for this geom',
-              friction:    'number[3] — [slide, spin, roll] friction coefficients',
+              friction:    'number[3] — [slide, spin, roll]. slide: tangential friction (0=icy, 1=normal, 2=rubbery). spin: torsional (typical 0.005). roll: rolling resistance (typical 0.0001).',
               contype:     'number — bitmask for collision group membership',
               conaffinity: 'number — bitmask for which groups this geom collides with',
               condim:      'number — contact dimensionality (1, 3, 4, or 6)',
-              solref:      'number[2] — constraint solver reference [timeconst, dampratio]',
-              solimp:      'number[5] — constraint solver impedance params',
+              solref:      'number[2] — [timeconst_s, dampingRatio]. timeconst_s: contact spring time constant in seconds (min 0.005s = 5x timestep, 0.04 is a safe default). dampingRatio: 1.0=no bounce (critically damped), 0.0=max bounce, ~0.2=lively. Contact blends both geoms by averaging — floor has dampingRatio=0.0 so it does not kill ball bounce.',
+              solimp:      'number[5] — [d0, d1, width, midpoint, power]. d0/d1: min/max impedance (0.99/0.9999 for hard contact). Typical bouncy: [0.99, 0.9999, 0.0001, 0.5, 2].',
               vertices:    'number[] — flat array of vertex positions for mesh type: [x0,y0,z0, x1,y1,z1, ...] in Three.js Y-up space',
               faces:       'number[] — flat array of triangle indices for mesh type: [i0,j0,k0, i1,j1,k1, ...]',
               dynamic:     'boolean — if true, mesh participates in simulation and collision; requires renderVertices',
@@ -761,6 +778,8 @@ export function useMCPBridge() {
               'Dynamic mesh face winding: use outward-facing CCW winding. Wrong winding causes inside-out contacts and objects sinking through surfaces.',
               'Dynamic mesh body pos: set body_pos=[0,0,0] to place mesh where its Y-up base sits. Adjust body_pos.z to raise/lower.',
               'Working example: mesh_collision preset (pyramid + ramp with full collision).',
+              'Bouncy objects: set solref=[0.04, 0.2] and solimp=[0.99, 0.9999, 0.0001, 0.5, 2]. dampingRatio 0.2 = lively bounce. The floor has dampingRatio=0.0 so ball+floor averages to 0.1 (still bouncy).',
+              'Contact blending: two geoms in contact average their solref/solimp. Keep this in mind when tuning — a non-bouncy floor (dampingRatio=1.0) will halve any ball\'s effective bounce.',
             ],
           };
 

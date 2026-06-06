@@ -1,14 +1,110 @@
 
 import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid } from '@react-three/drei';
+import { OrbitControls, Grid, Html } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useMCPBridge } from './hooks/useMCPBridge';
 import { useStore, scaleMeshGeoms } from './store/useStore';
 import type { SceneGraph, SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload } from 'lucide-react';
-import { useRef, useMemo, useEffect, useCallback, useState } from 'react';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload, FileText, ChevronDown, ChevronUp, Edit3 } from 'lucide-react';
+import { useRef, useMemo, useEffect, useCallback, useState, type RefObject } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
+
+// Simple robust markdown parser to convert basic markdown text to safe HTML
+// Markdown parser for note cards
+function parseNoteMarkdown(md: string): string {
+  if (!md) return '';
+  let html = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  html = html.replace(/^### (.*$)/gim, '<h3 class="text-xs font-bold text-slate-800 mt-2 mb-1 uppercase tracking-wide">$1</h3>');
+  html = html.replace(/^## (.*$)/gim, '<h2 class="text-sm font-bold text-slate-800 mt-3 mb-1 border-b border-slate-100 pb-0.5">$1</h2>');
+  html = html.replace(/^# (.*$)/gim, '<h1 class="text-base font-extrabold text-slate-900 mt-3 mb-2 border-b border-slate-200 pb-1">$1</h1>');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-slate-900">$1</strong>');
+  html = html.replace(/\*(.*?)\*/g, '<em class="italic text-slate-700">$1</em>');
+  html = html.replace(/`(.*?)`/g, '<code class="px-1 py-0.5 bg-slate-100 border border-slate-200 rounded text-[10px] font-mono text-pink-600">$1</code>');
+  html = html.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">$1</a>');
+  html = html.replace(/^\s*-\s+(.*$)/gim, '<li class="ml-4 list-disc text-slate-600 text-xs mb-0.5">$1</li>');
+  html = html.split('\n').map(line => {
+    const t = line.trim();
+    if (t.startsWith('<h') || t.startsWith('<li') || t === '') return line;
+    return `<p class="text-xs text-slate-600 mb-1.5 leading-relaxed">${line}</p>`;
+  }).join('\n');
+  return html;
+}
+
+// Floating note card overlay component
+function NoteCardOverlay({ card, isEditing, onToggleEdit, onToggleMinimize, onMarkdownChange, onClose, onMove }: {
+  card: { id: string; markdown: string; minimized: boolean; x: number; y: number };
+  isEditing: boolean;
+  onToggleEdit: () => void;
+  onToggleMinimize: () => void;
+  onMarkdownChange: (md: string) => void;
+  onClose: () => void;
+  onMove: (x: number, y: number) => void;
+}) {
+  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
+  const handleTitleMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, origX: card.x, origY: card.y };
+    const handleMouseMove = (me: MouseEvent) => {
+      if (!dragRef.current) return;
+      onMove(dragRef.current.origX + me.clientX - dragRef.current.startX, dragRef.current.origY + me.clientY - dragRef.current.startY);
+    };
+    const handleMouseUp = () => { dragRef.current = null; window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  return (
+    <div
+      style={{ position: 'absolute', left: card.x, top: card.y, zIndex: 25, width: 300 }}
+      className="bg-white/95 backdrop-blur-md border border-slate-200 shadow-2xl rounded-2xl overflow-hidden"
+    >
+      {/* Title bar */}
+      <div
+        className="flex items-center justify-between px-3 py-2 bg-slate-50/80 border-b border-slate-100 cursor-move select-none"
+        onMouseDown={handleTitleMouseDown}
+      >
+        <div className="flex items-center gap-1.5">
+          <FileText className="w-3.5 h-3.5 text-violet-600" />
+          <span className="text-xs font-semibold text-slate-700">Note Card</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={onToggleEdit} className="p-0.5 rounded hover:bg-slate-200 transition-colors" title={isEditing ? 'Preview' : 'Edit'}>
+            <Edit3 className="w-3 h-3 text-slate-500" />
+          </button>
+          <button onClick={onToggleMinimize} className="p-0.5 rounded hover:bg-slate-200 transition-colors" title={card.minimized ? 'Expand' : 'Minimize'}>
+            {card.minimized ? <ChevronDown className="w-3 h-3 text-slate-500" /> : <ChevronUp className="w-3 h-3 text-slate-500" />}
+          </button>
+          <button onClick={onClose} className="p-0.5 rounded hover:bg-red-100 transition-colors" title="Close">
+            <X className="w-3 h-3 text-slate-500 hover:text-red-500" />
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
+      {!card.minimized && (
+        <div className="p-3">
+          {isEditing ? (
+            <textarea
+              autoFocus
+              rows={8}
+              value={card.markdown}
+              onChange={(e) => onMarkdownChange(e.target.value)}
+              className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs bg-white text-slate-700 outline-none focus:border-violet-400 font-mono resize-y shadow-sm"
+              placeholder="Write markdown here..."
+            />
+          ) : (
+            <div
+              className="prose-sm max-h-64 overflow-y-auto"
+              dangerouslySetInnerHTML={{ __html: parseNoteMarkdown(card.markdown) }}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Physics Step Hook
 const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any, mujoco: any, isPlaying: boolean }) => {
@@ -728,6 +824,113 @@ const PhysicsLoop = ({ model, data, mujoco, isPlaying }: { model: any, data: any
   return null;
 };
 
+// AxisLegendDrawer — lives inside the R3F Canvas, reads camera every frame and draws
+// MuJoCo XYZ axes onto an external HTML canvas element passed via ref.
+// MuJoCo coord system: X=right (red), Y=into screen (green), Z=up (blue)
+// Three.js Y-up mapping: mujoco(x,y,z) → three(x, z, -y)
+const AxisLegendDrawer = ({ externalRef }: { externalRef: RefObject<HTMLCanvasElement | null> }) => {
+  const { camera } = useThree();
+
+  useFrame(() => {
+    const el = externalRef.current;
+    if (!el) return;
+    const ctx = el.getContext('2d');
+    if (!ctx) return;
+
+    const W = el.width;
+    const H = el.height;
+    const cx = W / 2;
+    const cy = H / 2 + 6; // shift down to give Z arrow more headroom at top
+    const len = W * 0.36;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Project a MuJoCo direction vector through the live camera view matrix
+    const projectAxis = (dx: number, dy: number, dz: number): [number, number] => {
+      // MuJoCo(x,y,z) → Three.js world direction: three(x, z, -y)
+      const worldDir = new THREE.Vector3(dx, dz, -dy);
+      worldDir.normalize();
+      const viewDir = worldDir.clone().transformDirection(camera.matrixWorldInverse);
+      // view space: x=right, y=up → screen: x=right, y=down
+      return [viewDir.x * len, -viewDir.y * len];
+    };
+
+    const axes = [
+      { dir: [1, 0, 0] as const, color: '#ef4444', label: 'X', shadow: '#7f1d1d' },
+      { dir: [0, 1, 0] as const, color: '#22c55e', label: 'Y', shadow: '#14532d' },
+      { dir: [0, 0, 1] as const, color: '#3b82f6', label: 'Z', shadow: '#1e3a8a' },
+    ];
+
+    // Compute projections and sort back-to-front
+    const projected = axes.map(a => {
+      const [px, py] = projectAxis(a.dir[0], a.dir[1], a.dir[2]);
+      const worldDir = new THREE.Vector3(a.dir[0], a.dir[2], -a.dir[1]);
+      const viewDir = worldDir.clone().transformDirection(camera.matrixWorldInverse);
+      return { ...a, px, py, depth: viewDir.z };
+    });
+    projected.sort((a, b) => a.depth - b.depth);
+
+    const arrowHead = (x: number, y: number, ax: number, ay: number, size: number) => {
+      const angle = Math.atan2(ay, ax);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - size * Math.cos(angle - 0.4), y - size * Math.sin(angle - 0.4));
+      ctx.lineTo(x - size * Math.cos(angle + 0.4), y - size * Math.sin(angle + 0.4));
+      ctx.closePath();
+      ctx.fill();
+    };
+
+    for (const { px, py, color, label, shadow } of projected) {
+      const ex = cx + px;
+      const ey = cy + py;
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.22)';
+      ctx.shadowBlur = 2;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      arrowHead(ex, ey, px, py, 8);
+      ctx.restore();
+
+      // Label: fixed 13px past the arrowhead tip, along the arrow direction.
+      // Normalizing prevents the label from jumping when the axis is nearly
+      // perpendicular to the screen (small projected length).
+      const mag = Math.sqrt(px * px + py * py);
+      if (mag > 2) {
+        const nx = px / mag;
+        const ny = py / mag;
+        const lx = ex + nx * 13;
+        const ly = ey + ny * 13;
+        ctx.save();
+        ctx.font = 'bold 11px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = shadow;
+        ctx.fillText(label, lx + 0.5, ly + 0.5);
+        ctx.fillStyle = color;
+        ctx.fillText(label, lx, ly);
+        ctx.restore();
+      }
+    }
+
+    // Origin dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#64748b';
+    ctx.fill();
+  });
+
+  return null;
+};
+
 // Camera Controller
 const CameraController = () => {
   const { camera } = useThree();
@@ -760,13 +963,13 @@ const CameraController = () => {
 };
 
 // Drop Handler for precise spawning
-const DropHandler = ({ addComponent }: { addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope', pos: [number, number, number]) => void }) => {
+const DropHandler = ({ addComponent }: { addComponent: (type: any, pos: [number, number, number]) => void }) => {
   const { camera } = useThree();
   
   useEffect(() => {
     const handler = (e: DragEvent) => {
       e.preventDefault();
-      const type = e.dataTransfer?.getData('type') as 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope';
+      const type = e.dataTransfer?.getData('type') as any;
       if (!type) return;
       
       const canvasEl = document.querySelector('canvas');
@@ -1127,10 +1330,12 @@ const DynamicGeom = ({ nodeId, name, type, color, mujoco, model, data, selectedN
           <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
         </mesh>
       ) : type === 'box' ? (
-        <mesh castShadow receiveShadow {...dragHandlers}>
-          <boxGeometry args={geometryArgs as any} />
-          <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
-        </mesh>
+        <>
+          <mesh castShadow receiveShadow {...dragHandlers}>
+            <boxGeometry args={geometryArgs as any} />
+            <meshStandardMaterial color={new THREE.Color(color[0], color[1], color[2])} emissive={isSelected ? '#3b82f6' : '#000'} emissiveIntensity={isSelected ? 0.2 : 0} />
+          </mesh>
+        </>
       ) : type === 'ellipsoid' ? (
         <mesh castShadow receiveShadow scale={[geometryArgs[0], geometryArgs[1], geometryArgs[2]]} {...dragHandlers}>
           <sphereGeometry args={[1, 32, 32]} />
@@ -1605,6 +1810,58 @@ const getSyncedSceneGraph = (
   return sceneCopy;
 };
 
+const PRESET_NOTE_CARDS: Record<string, string> = {
+  empty: `# Blank Scene\n\nAn empty world with just the ground plane.\n\n## Getting started\n- Drag components from the left sidebar into the scene\n- Select a body to edit its mass, size, and material\n- Press **Play** to start the simulation`,
+
+  pendulum: `# Double Pendulum\n\nTwo rigid rods connected by **hinge joints**, exhibiting chaotic motion.\n\n## Physics\n- **Hinge joints** constrain each rod to 1-DOF rotation\n- Small changes in initial angle lead to wildly different trajectories — a hallmark of **deterministic chaos**\n- Energy is conserved (no damping by default)\n\n## Try it\n- Change the initial angle of either bob to see chaos emerge\n- Add joint damping to watch energy decay`,
+
+  cubes: `# Stacked Cubes\n\nRigid-body stacking with contact forces and friction.\n\n## Physics\n- **Free joints** give each cube 6 degrees of freedom\n- Resting contact is resolved by the **constraint solver** (PGS)\n- Stack height is limited by friction and the solver's penetration tolerance\n\n## Try it\n- Reduce floor friction to watch the stack slide\n- Change cube masses to shift the centre of mass`,
+
+  gears: `# Gear System\n\nTwo meshing spur gears coupled by **proximity-aware equality constraints**.\n\n## Physics\n- Direct gear-tooth collision causes jitter; instead, angular velocities are linked via a **joint equality constraint** when gears are within meshing distance\n- Gear ratio is determined by the ratio of tooth counts\n- Uncheck *Allow Mechanical Coupling* to test raw contact\n\n## Key settings\n- **Teeth count** controls gear ratio\n- **Damping** prevents runaway spin`,
+
+  machine: `# Gear Train Machine\n\nA multi-stage gear train demonstrating **torque multiplication**.\n\n## Physics\n- Each meshing pair is proximity-coupled; a driving hinge torque propagates through the chain\n- Output speed = input speed × (product of driver teeth / product of driven teeth)\n- Larger driven gears turn slower but with more torque\n\n## Try it\n- Apply a control script torque to the first gear via \`api.applyJointForce()\`\n- Observe speed reduction at each stage`,
+
+  rack_pinion: `# Rack and Pinion\n\nConverts **rotary motion** (pinion gear) to **linear motion** (rack).\n\n## Physics\n- Pinion hinge rotation is coupled to rack slide translation via a **joint equality constraint** when the bodies are within 0.5 m\n- Linear displacement = pinion angle × pinion pitch radius\n\n## Try it\n- Drive the pinion with a script: \`api.applyJointForce('pinion_hinge', 5)\`\n- Add a load mass to the rack to see force requirements increase`,
+
+  inclined_plane: `# Inclined Plane\n\nClassic mechanics: a block sliding down a ramp under gravity.\n\n## Physics\n- Net force along the plane: *F = mg sin θ − μmg cos θ*\n- **Static friction** prevents motion when *tan θ < μ*\n- Once sliding, **kinetic friction** is lower than static\n\n## Try it\n- Adjust the wedge angle to find the critical slip angle\n- Change the block's friction coefficient in the properties panel`,
+
+  pulley_system: `# Pulley System\n\nA compound pulley demonstrating **mechanical advantage**.\n\n## Physics\n- The rope is simulated as a length-constrained rigid segment via **joint equality**\n- A compound pulley with N rope segments reduces the required force by ×N\n- Rope tension is transferred through the pulley wheel hinge\n\n## Key concepts\n- Ideal mechanical advantage = number of rope segments supporting the load\n- Energy is conserved: you pull further but with less force`,
+
+  cartpole: `# Cartpole\n\nA cart-pole balancing system controlled by an **LQR controller**.\n\n## Physics\n- The cart slides on a frictionless track (slide joint)\n- The pole pivots on a hinge — an **inverted pendulum**, inherently unstable\n- A **Linear Quadratic Regulator (LQR)** applies horizontal force to keep the pole upright\n\n## Control law\n*F = −(k_x·x + k_v·ẋ + k_θ·θ + k_ω·θ̇)*\n\n| Gain | Value | Role |\n|------|-------|------|\n| k_x | 22.0 | Position centering |\n| k_θ | 80.0 | Vertical catch |\n\n## Try it\n- Increase the pole's mass to stress-test the controller\n- Modify gains in the control script`,
+
+  newtons_cradle: `# Newton's Cradle\n\nConservation of **momentum and energy** in elastic collisions.\n\n## Physics\n- Each ball is a pendulum on a hinge joint\n- Collisions are nearly elastic (high restitution)\n- Momentum is transferred through the stationary balls — only the end ball swings out\n- *n* balls swung in → *n* balls swing out (momentum + energy conservation)\n\n## Try it\n- Pull back 2 balls instead of 1 and observe the output`,
+
+  suspension_bridge: `# Suspension Bridge\n\nA cable-stayed bridge demonstrating **static equilibrium** and structural load paths.\n\n## Physics\n- The deck is supported by angled cables under tension\n- Load is transferred: deck → cables → towers → ground\n- Cables can only pull, not push (tension-only members)\n\n## Try it\n- Drop a heavy object onto the deck\n- Remove a cable to see redistribution of load`,
+
+  paper_plane: `# Paper Plane\n\nAerodynamic flight with **lift, drag, and pitch stability**.\n\n## Physics\n- The plane is an **aerodynamic body** (isAerodynamic = true)\n- Lift: *L = ½ ρ v² C_L A sin(α)* where α is angle of attack\n- Drag: *D = ½ ρ v² C_D A*\n- Forces are applied each timestep via the control script\n\n## Key concepts\n- Too steep an angle of attack → stall (lift collapses)\n- Trim angle sets the glide ratio\n\n## Try it\n- Adjust launch velocity and angle in the joint initial velocity\n- Change wind speed in Environment settings`,
+
+  monkey_head: `# Monkey Head\n\nA physics-active body built from **compound primitive geoms** — no mesh required.\n\n## Physics\n- A **free joint** gives the head full 6-DOF motion — it falls, bounces, and rolls\n- The shape is approximated by ~15 ellipsoids, spheres, and boxes (skull, snout, cheeks, eyes, ears…)\n- MuJoCo computes the **composite inertia tensor** automatically from all geoms\n- Collision is handled per-geom — each primitive has its own contact normal\n\n## Key concepts\n- Complex shapes are best approximated by multiple primitives, not a single mesh\n- Compound bodies share one free joint on the root geom\n\n## Try it\n- Increase restitution (bounciness) in the geom friction settings\n- Drop it from different heights via Launch Velocity`,
+
+  golden_gate: `# Golden Gate Bridge (Primitive)\n\nA suspension bridge built from **primitive geoms** (boxes and capsules).\n\n## Physics\n- All structural members are static bodies (no joints = welded to world)\n- The bridge is a rigid visual reference — drop objects onto it!\n- Primitive collision hulls are exact for simple shapes\n\n## Try it\n- Add a free sphere above the deck and watch it roll off\n- Toggle solid/ephemeral collision on bridge members`,
+
+  golden_gate_mesh: `# Golden Gate Bridge (Mesh)\n\nThe same bridge reconstructed with **custom mesh geoms**.\n\n## Physics\n- Deck, towers, and cables are static mesh bodies\n- Mesh collision uses MuJoCo's **convex hull** approximation\n- Concave shapes require decomposition into multiple convex pieces\n\n## Key concepts\n- Mesh vertices authored in Three.js Y-up; Y↔Z swap is automatic\n- Face winding must be outward-facing (CCW viewed from outside)`,
+
+  mesh_collision: `# Mesh Collision Demo\n\nShows a **dynamic convex mesh** (pyramid) interacting with a static ramp.\n\n## Physics\n- The pyramid is a **dynamic mesh** (dynamic: true) with a free joint\n- MuJoCo takes the **convex hull** of the mesh for collision\n- renderVertices are in raw Z-up space for Three.js rendering alignment\n\n## Key concepts\n- Body position tracks the mesh's **volume centroid** (not the base)\n- Set body_pos.z to centroid height to sit flush with the ground`,
+
+  coin_flip: `# Coin Flip\n\nA probabilistic physics experiment demonstrating **initial condition sensitivity**.\n\n## Physics\n- The coin has a free joint (6-DOF)\n- A control script randomises angular velocity at *t = 0* using \`api.setAngularVelocity()\`\n- Heads/tails outcome is determined by which face is up when it lands\n\n## Key concepts\n- Coin toss is deterministic given exact initial conditions\n- Randomness comes from the random seed applied in the script\n\n## Try it\n- Run headless 1000× via MCP to measure heads/tails ratio`,
+
+  windmill: `# Wind Turbine (Aerodynamic)\n\nA three-blade turbine driven by **aerodynamic lift on the blades**.\n\n## Physics\n- Each blade is marked isAerodynamic = true\n- Lift is computed from relative wind velocity and angle of attack\n- The hub hinge converts blade lift torque to rotational speed\n- Wind is set globally via Environment → Wind X\n\n## Key equations\n*L = ½ ρ v_rel² C_L A sin(α)*\n*T = L × arm_length*\n\n## Try it\n- Increase wind speed to raise RPM\n- Change blade pitch angle to find optimal attack angle`,
+
+  physics_only_windmill: `# Wind Turbine (No Aerodynamics)\n\nThe same turbine geometry driven by a **direct script torque** instead of aerodynamics.\n\n## Physics\n- Aerodynamic forces are disabled; a fixed torque is applied via control script\n- Useful for isolating mechanical behaviour from aerodynamic complexity\n- Hinge damping limits maximum RPM\n\n## Try it\n- Compare RPM with the aerodynamic version at the same wind speed\n- Vary damping to tune the speed`,
+
+  traditional_windmill: `# Traditional Windmill (4-Blade)\n\nA classic four-sail Dutch windmill driven by wind pressure.\n\n## Physics\n- Four flat sails create drag-driven rotation (not lift-driven)\n- Each sail is an aerodynamic flat plate; drag dominates at low tip-speed ratios\n- The main shaft hinge connects sail rotation to a milling load\n\n## Try it\n- Adjust sail area (size) to change torque at a given wind speed`,
+
+  drone: `# Quadcopter Drone\n\nA quadrotor UAV with **PD attitude control** and per-rotor thrust.\n\n## Physics\n- Four rotors apply upward thrust and reaction torques\n- **PD controller** compares current orientation to target and commands differential thrust\n- Aerodynamic drag is applied to the frame body\n\n## Control law\n*τ = k_p × error + k_d × error_rate*\n\n## Try it\n- Use arrow keys / WASD to command pitch and roll\n- Adjust k_p and k_d gains in the control script to tune stability\n- Increase rotor drag coefficient to simulate thicker air`,
+
+  bouncy_balls: `# Bouncy Balls\n\n20 multicolored spheres with **high restitution** colliding under gravity.\n\n## Physics\n- Each ball has a **free joint** (6-DOF) and a unique radius (0.18–0.27 m)\n- Uses MuJoCo's **spring-damper contact model**: \`solref=[timeconst, dampingRatio]\`\n- \`solref=[0.04, 0.2]\` = 40 ms contact spring, 20% damping → lively bounce\n- \`dampingRatio < 1\` = underdamped = bouncy; \`= 1\` = critically damped = no bounce\n\n## Try it\n- Use the **Bounciness slider** in the properties panel to tune each ball\n- Change gravity in Environment settings to see low-gravity chaos`,
+};
+
+function makePresetNoteCard(presetKey: string): { id: string; markdown: string; minimized: boolean; x: number; y: number } | null {
+  const md = PRESET_NOTE_CARDS[presetKey];
+  if (!md) return null;
+  return { id: `preset_note_${presetKey}`, markdown: md, minimized: false, x: 16, y: 16 };
+}
+
 function App() {
   if (typeof window !== 'undefined') {
     (window as any).useStore = useStore;
@@ -1623,6 +1880,15 @@ function App() {
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [presetNameInput, setPresetNameInput] = useState('');
   const [activeGeomIndex, setActiveGeomIndex] = useState(0);
+  const [noteCards, setNoteCards] = useState<{ id: string; markdown: string; minimized: boolean; x: number; y: number }[]>([]);
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const axisCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Expose noteCards state to MCP bridge
+  useEffect(() => {
+    (window as any)._physics_getNoteCards = () => noteCards;
+    (window as any)._physics_setNoteCards = (cards: typeof noteCards) => setNoteCards(cards);
+  }, [noteCards]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1644,7 +1910,7 @@ function App() {
     model, data, mujoco, recompileId, activePreset,
     isPlaying, togglePlay, isLoaded, 
     isSettingsOpen, setSettingsOpen, 
-    gravityZ, windX, windY, density, floorFriction, setEnvironment,
+    gravityZ, windX, windY, density, floorFriction, floorBounce, setEnvironment,
     cameraView, setCameraView,
     sceneGraph, selectedNodeId, setSelectedNodeId,
     updateNodeGeom, updateNodeJoint, updateGearTeeth, addComponent, loadPreset, updateScene,
@@ -1654,6 +1920,15 @@ function App() {
     updateWedgeParams, updatePulleyParams, updateRopeParams,
     parentUnderSelected, setParentUnderSelected, updateNodeScript, updateNode
   } = useStore();
+
+  // Show the note card for whichever preset is active on first load
+  useEffect(() => {
+    if (activePreset && !activePreset.startsWith('user:')) {
+      const card = makePresetNoteCard(activePreset);
+      setNoteCards(card ? [card] : []);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally only on mount
 
   const handleSavePresetClick = useCallback(() => {
     setPresetNameInput('');
@@ -1666,7 +1941,7 @@ function App() {
     try {
       const syncedScene = getSyncedSceneGraph(sceneGraph, model, data, mujoco);
       const userPresets = JSON.parse(localStorage.getItem('physics_user_presets') || '{}');
-      userPresets[name] = syncedScene;
+      userPresets[name] = { ...syncedScene, noteCards };
       localStorage.setItem('physics_user_presets', JSON.stringify(userPresets));
       loadPreset(`user:${name}`);
     } catch (e) {
@@ -1674,12 +1949,12 @@ function App() {
     }
     setIsSaveModalOpen(false);
     setPresetNameInput('');
-  }, [presetNameInput, sceneGraph, model, data, mujoco, loadPreset]);
+  }, [presetNameInput, sceneGraph, model, data, mujoco, loadPreset, noteCards]);
 
   const exportJson = useCallback(() => {
     try {
       const syncedScene = getSyncedSceneGraph(sceneGraph, model, data, mujoco);
-      const dataStr = JSON.stringify(syncedScene, null, 2);
+      const dataStr = JSON.stringify({ ...syncedScene, noteCards }, null, 2);
       const blob = new Blob([dataStr], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1691,7 +1966,7 @@ function App() {
       console.error('Failed to export JSON', e);
       alert('Failed to export JSON');
     }
-  }, [sceneGraph, model, data, mujoco]);
+  }, [sceneGraph, model, data, mujoco, noteCards]);
 
   const importJson = useCallback(() => {
     const input = document.createElement('input');
@@ -1707,6 +1982,7 @@ function App() {
           if (parsed && Array.isArray(parsed.nodes)) {
             if (isPlaying) togglePlay();
             updateScene(parsed);
+            if (Array.isArray(parsed.noteCards)) setNoteCards(parsed.noteCards);
           } else {
             alert('Invalid scene JSON format. Must contain a "nodes" array.');
           }
@@ -1718,6 +1994,31 @@ function App() {
     };
     input.click();
   }, [isPlaying, togglePlay, updateScene]);
+
+  // Load a preset and replace the note card with the preset's built-in card (if any)
+  const loadPresetWithCard = useCallback((name: string) => {
+    loadPreset(name);
+    const builtinKey = name.startsWith('user:') ? null : name;
+    const presetCard = builtinKey ? makePresetNoteCard(builtinKey) : null;
+    setNoteCards(presetCard ? [presetCard] : []);
+    setEditingCardId(null);
+  }, [loadPreset]);
+
+  // Also load note cards from user presets (stored alongside the scene)
+  const loadUserPresetWithCard = useCallback((name: string) => {
+    loadPreset(name);
+    try {
+      const userPresets = JSON.parse(localStorage.getItem('physics_user_presets') || '{}');
+      const key = name.replace('user:', '');
+      const saved = userPresets[key];
+      if (saved && Array.isArray(saved.noteCards)) {
+        setNoteCards(saved.noteCards);
+      } else {
+        setNoteCards([]);
+      }
+    } catch { setNoteCards([]); }
+    setEditingCardId(null);
+  }, [loadPreset]);
 
   // Helper to find a node by ID in hierarchy
   const findNodeById = useCallback((nodes: any[], targetId: string): any | null => {
@@ -1963,7 +2264,11 @@ function App() {
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:inline">Preset:</span>
             <select 
               value={activePreset || ''}
-              onChange={(e) => loadPreset(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v.startsWith('user:')) loadUserPresetWithCard(v);
+                else loadPresetWithCard(v);
+              }}
               className="px-2 md:px-3 py-1.5 rounded-full bg-white hover:bg-slate-100 transition-colors border border-slate-200 text-xs md:text-sm font-medium text-slate-700 shadow-sm outline-none cursor-pointer focus:border-blue-500 max-w-[100px] sm:max-w-[130px] md:max-w-none"
             >
               <optgroup label="⬜ Built-in Presets">
@@ -1988,6 +2293,7 @@ function App() {
                 <option value="physics_only_windmill">💨 Wind Turbine (No Aero)</option>
                 <option value="traditional_windmill">💨 Traditional Windmill (4-Blade)</option>
                 <option value="drone">🛸 Quadcopter Drone</option>
+                <option value="bouncy_balls">🎱 Bouncy Balls</option>
               </optgroup>
 
               {/* User Presets */}
@@ -2114,6 +2420,10 @@ function App() {
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-slate-500 flex justify-between">Floor Friction <span>{floorFriction.toFixed(2)}</span></label>
                 <input type="range" min="0" max="2" step="0.01" value={floorFriction} onChange={(e) => setEnvironment({floorFriction: parseFloat(e.target.value)})} className="w-full accent-blue-500" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-500 flex justify-between">Floor Bounciness <span>{(floorBounce ?? 0).toFixed(2)}</span></label>
+                <input type="range" min="0" max="1" step="0.01" value={floorBounce ?? 0} onChange={(e) => setEnvironment({floorBounce: parseFloat(e.target.value)})} className="w-full accent-blue-500" />
               </div>
             </div>
           </div>
@@ -2284,6 +2594,23 @@ function App() {
                 <span className="text-[10px] text-slate-400">Custom geometry (visual)</span>
               </div>
             </div>
+
+            <div
+              onClick={() => {
+                const id = `card_${Date.now()}`;
+                setNoteCards(prev => [...prev, { id, markdown: '# Note\n\nWrite your notes here.', minimized: false, x: 80, y: 80 }]);
+                setEditingCardId(id);
+                setIsLeftSidebarOpen(false);
+              }}
+              className="p-2.5 border border-dashed border-violet-300 rounded-lg bg-violet-50/40 flex items-center gap-3 cursor-pointer hover:border-violet-400 hover:bg-violet-50 transition-all group select-none"
+            >
+              <FileText className="w-4 h-4 text-violet-600 group-hover:scale-110 transition-transform" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-700 pointer-events-none">Note Card</span>
+                <span className="text-[10px] text-violet-400 pointer-events-none">Click to add overlay</span>
+              </div>
+            </div>
+
           </div>
         </aside>
 
@@ -2297,6 +2624,26 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* Axis Legend — HTML overlay, drawn to from inside the R3F Canvas via shared ref */}
+          <div
+            style={{
+              position: 'absolute',
+              top: '0.75rem',
+              right: '0.75rem',
+              zIndex: 15,
+              pointerEvents: 'none',
+              background: 'rgba(248, 250, 252, 0.85)',
+              backdropFilter: 'blur(6px)',
+              WebkitBackdropFilter: 'blur(6px)',
+              border: '1px solid rgba(203, 213, 225, 0.7)',
+              borderRadius: '10px',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.10)',
+              padding: '3px',
+            }}
+          >
+            <canvas ref={axisCanvasRef} width={76} height={76} style={{ display: 'block', borderRadius: '7px' }} />
+          </div>
           
           <Canvas camera={CAMERA_CONFIG} shadows onPointerMissed={handlePointerMissed}>
             <DropHandler addComponent={addComponent} />
@@ -2333,9 +2680,24 @@ function App() {
               setSelectedNodeId={setSelectedNodeId}
             />
             
+            <AxisLegendDrawer externalRef={axisCanvasRef} />
             <CameraController />
             <DragInteractionController />
           </Canvas>
+
+          {/* Floating Note Card Overlays */}
+          {noteCards.map(card => (
+            <NoteCardOverlay
+              key={card.id}
+              card={card}
+              isEditing={editingCardId === card.id}
+              onToggleEdit={() => setEditingCardId(prev => prev === card.id ? null : card.id)}
+              onToggleMinimize={() => setNoteCards(prev => prev.map(c => c.id === card.id ? { ...c, minimized: !c.minimized } : c))}
+              onMarkdownChange={(md) => setNoteCards(prev => prev.map(c => c.id === card.id ? { ...c, markdown: md } : c))}
+              onClose={() => { setNoteCards(prev => prev.filter(c => c.id !== card.id)); if (editingCardId === card.id) setEditingCardId(null); }}
+              onMove={(x, y) => setNoteCards(prev => prev.map(c => c.id === card.id ? { ...c, x, y } : c))}
+            />
+          ))}
         </main>
 
         {/* Contextual Properties Sidebar */}
@@ -3357,80 +3719,102 @@ function App() {
                         </button>
                       </h3>
 
-                      {/* Bounciness (Restitution) Slider */}
+                      {/* Contact spring timeconst — solref[0] */}
                       {(() => {
-                        const currentBounce = (() => {
-                          if (!geom.solref) return 0.0;
-                          if (geom.solref[0] >= 0) return 0.0;
-                          const damping = -geom.solref[1];
-                          if (damping >= 50) return 0.0;
-                          const b = Math.exp(-damping / 20);
-                          return Math.min(0.99, Math.max(0.0, b));
-                        })();
+                        const val = geom.solref ? Math.max(0.001, geom.solref[0]) : 0.02;
                         return (
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-semibold text-slate-500 flex justify-between">
-                              Bounciness (Bounce)
-                              <span className="text-blue-600 font-bold">{currentBounce.toFixed(2)}</span>
+                              Contact Stiffness <span className="text-[10px] font-normal text-slate-400">solref[0]</span>
+                              <span className="text-blue-600 font-bold">{val.toFixed(3)}s</span>
                             </label>
-                            <input 
-                              type="range" 
-                              min="0.0" 
-                              max="0.99" 
-                              step="0.01" 
-                              className="w-full accent-blue-500 cursor-pointer" 
-                              value={currentBounce} 
+                            <input type="range" min="0.001" max="0.1" step="0.001" className="w-full accent-blue-500 cursor-pointer"
+                              value={val}
                               onChange={(e) => {
-                                const bounce = parseFloat(e.target.value);
-                                if (bounce > 0) {
-                                  const damping = -20 * Math.log(bounce);
-                                  const stiffness = bounce > 0.95 ? -1000 - (bounce - 0.95) * 475000 : -1000;
-                                  updateNodeGeom(selectedNode.id, {
-                                    solref: [stiffness, -damping],
-                                    solimp: [0.99, 0.99, 0.001, 0.5, 2]
-                                  }, activeIndex);
-                                } else {
-                                  // Omit or reset solref/solimp
-                                  const updatedGeom = { ...geom };
-                                  delete updatedGeom.solref;
-                                  delete updatedGeom.solimp;
-                                  updateNodeGeom(selectedNode.id, updatedGeom, activeIndex);
-                                }
+                                const sr = geom.solref ? [...geom.solref] : [0.02, 1.0];
+                                sr[0] = parseFloat(e.target.value);
+                                updateNodeGeom(selectedNode.id, { solref: sr as [number,number] }, activeIndex);
                               }}
                             />
-                            <span className="text-[10px] text-slate-400 leading-tight">
-                              Controls elastic bounce restitution (elastic limit is 0.99).
-                            </span>
+                            <span className="text-[10px] text-slate-400 leading-tight">Time constant of the contact spring. Lower = stiffer contact. Keep ≥ 5× timestep (0.005s) to avoid instability.</span>
                           </div>
                         );
                       })()}
 
-                      {/* Friction Slider */}
+                      {/* Damping ratio — solref[1] */}
                       {(() => {
-                        const currentFriction = geom.friction ? geom.friction[0] : 0.7;
+                        const val = geom.solref ? Math.max(0, Math.min(1, geom.solref[1])) : 1.0;
                         return (
                           <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
                             <label className="text-xs font-semibold text-slate-500 flex justify-between">
-                              Sliding Friction
-                              <span className="text-blue-600 font-bold">{currentFriction.toFixed(2)}</span>
+                              Damping Ratio (Bounciness) <span className="text-[10px] font-normal text-slate-400">solref[1]</span>
+                              <span className="text-blue-600 font-bold">{val.toFixed(2)}</span>
                             </label>
-                            <input 
-                              type="range" 
-                              min="0.0" 
-                              max="1.5" 
-                              step="0.05" 
-                              className="w-full accent-blue-500 cursor-pointer" 
-                              value={currentFriction} 
+                            <input type="range" min="0.0" max="1.0" step="0.01" className="w-full accent-blue-500 cursor-pointer"
+                              value={val}
                               onChange={(e) => {
-                                const f = parseFloat(e.target.value);
+                                const dr = parseFloat(e.target.value);
+                                const sr = geom.solref ? [...geom.solref] : [0.02, 1.0];
+                                sr[1] = dr;
                                 updateNodeGeom(selectedNode.id, {
-                                  friction: [f, 0.005, 0.0001]
+                                  solref: sr as [number,number],
+                                  solimp: [0.99, 0.9999, 0.0001, 0.5, 2]
                                 }, activeIndex);
                               }}
                             />
-                            <span className="text-[10px] text-slate-400 leading-tight">
-                              Low friction makes it slippery like ice. High friction creates rubbery resistance.
-                            </span>
+                            <span className="text-[10px] text-slate-400 leading-tight">0 = max bounce (underdamped). 1 = no bounce (critically damped). ~0.2 gives lively bouncing.</span>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Contact impedance — solimp[0] */}
+                      {(() => {
+                        const val = geom.solimp ? geom.solimp[0] : 0.99;
+                        return (
+                          <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-2">
+                            <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                              Contact Impedance <span className="text-[10px] font-normal text-slate-400">solimp[0]</span>
+                              <span className="text-blue-600 font-bold">{val.toFixed(3)}</span>
+                            </label>
+                            <input type="range" min="0.8" max="0.9999" step="0.001" className="w-full accent-blue-500 cursor-pointer"
+                              value={val}
+                              onChange={(e) => {
+                                const si = geom.solimp ? [...geom.solimp] : [0.99, 0.9999, 0.0001, 0.5, 2];
+                                si[0] = parseFloat(e.target.value);
+                                updateNodeGeom(selectedNode.id, { solimp: si as any }, activeIndex);
+                              }}
+                            />
+                            <span className="text-[10px] text-slate-400 leading-tight">Controls how much the contact force can deviate from ideal. Higher = harder, less penetration.</span>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Friction Sliders */}
+                      {(() => {
+                        const fr = geom.friction ?? [0.7, 0.005, 0.0001];
+                        return (
+                          <div className="flex flex-col gap-2 mt-1 border-t border-slate-100 pt-2">
+                            {[
+                              { label: 'Sliding Friction', key: 0, min: 0, max: 2, step: 0.01, hint: 'Tangential friction. High = rubbery, low = icy.' },
+                              { label: 'Torsional Friction', key: 1, min: 0, max: 0.05, step: 0.001, hint: 'Spin friction around the contact normal.' },
+                              { label: 'Rolling Friction', key: 2, min: 0, max: 0.01, step: 0.0001, hint: 'Resistance to rolling. Keeps balls from rolling forever.' },
+                            ].map(({ label, key, min, max, step, hint }) => (
+                              <div key={key} className="flex flex-col gap-1.5">
+                                <label className="text-xs font-semibold text-slate-500 flex justify-between">
+                                  {label} <span className="text-[10px] font-normal text-slate-400">friction[{key}]</span>
+                                  <span className="text-blue-600 font-bold">{fr[key].toFixed(key === 2 ? 4 : 3)}</span>
+                                </label>
+                                <input type="range" min={min} max={max} step={step} className="w-full accent-blue-500 cursor-pointer"
+                                  value={fr[key]}
+                                  onChange={(e) => {
+                                    const newFr = [...fr] as [number,number,number];
+                                    newFr[key] = parseFloat(e.target.value);
+                                    updateNodeGeom(selectedNode.id, { friction: newFr }, activeIndex);
+                                  }}
+                                />
+                                <span className="text-[10px] text-slate-400 leading-tight">{hint}</span>
+                              </div>
+                            ))}
                           </div>
                         );
                       })()}

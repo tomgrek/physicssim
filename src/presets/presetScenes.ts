@@ -2093,6 +2093,40 @@ export const traditionalWindmillPreset: SceneGraph = {
   ]
 };
 
+export const bouncyBallsPreset: SceneGraph = (() => {
+  const colors: number[][] = [
+    [0.95, 0.15, 0.15, 1], [0.15, 0.55, 0.95, 1], [0.15, 0.85, 0.30, 1],
+    [0.95, 0.65, 0.10, 1], [0.75, 0.15, 0.90, 1], [0.10, 0.85, 0.85, 1],
+    [0.95, 0.35, 0.75, 1], [0.50, 0.85, 0.10, 1], [0.95, 0.90, 0.10, 1],
+    [0.90, 0.45, 0.10, 1], [0.20, 0.30, 0.90, 1], [0.85, 0.10, 0.45, 1],
+    [0.10, 0.75, 0.50, 1], [0.60, 0.40, 0.90, 1], [0.95, 0.75, 0.45, 1],
+    [0.30, 0.90, 0.70, 1], [0.90, 0.20, 0.60, 1], [0.45, 0.65, 0.10, 1],
+    [0.80, 0.80, 0.20, 1], [0.10, 0.50, 0.70, 1],
+  ];
+  // Deterministic scatter across X/Y/Z using a simple LCG so balls don't stack
+  const lcg = (s: number) => { let v = s; return () => { v = (v * 1664525 + 1013904223) & 0x7fffffff; return v / 0x7fffffff; }; };
+  const rng = lcg(42);
+  const positions: [number,number,number][] = colors.map(() => [
+    (rng() - 0.5) * 4.0,   // X: -2..2
+    (rng() - 0.5) * 2.0,   // Y: -1..1 (depth)
+    1.5 + rng() * 5.0,      // Z: 1.5..6.5 (height, staggered)
+  ]);
+  const nodes = colors.map((rgba, i) => {
+    const r = 0.18 + (i % 4) * 0.03; // radii 0.18, 0.21, 0.24, 0.27
+    return {
+      id: `ball_${i}`, name: `ball_${i}`, type: 'body' as const,
+      pos: positions[i],
+      joints: [{ name: `ball_${i}_free`, type: 'free' as const, initialVelocity: [0,0,0,0,0,0] }],
+      geoms: [{ name: `ball_${i}_geom`, type: 'sphere' as const, size: [r], rgba, mass: 0.3,
+        friction: [0.1, 0.005, 0.0001],
+        solref: [0.04, 0.2],
+        solimp: [0.99, 0.9999, 0.0001, 0.5, 2] }],
+      children: [],
+    };
+  });
+  return { nodes };
+})();
+
 export const PRESETS = {
   empty: {
     name: 'Blank (Empty)',
@@ -2180,5 +2214,10 @@ export const PRESETS = {
   drone: {
     name: 'Quadcopter Drone',
     scene: dronePreset
+  },
+  bouncy_balls: {
+    name: 'Bouncy Balls',
+    scene: bouncyBallsPreset,
+    environment: { floorBounce: 0.85 }
   }
 };

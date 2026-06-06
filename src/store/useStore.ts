@@ -145,6 +145,7 @@ export interface PhysicsState {
   windY: number;
   density: number;
   floorFriction: number;
+  floorBounce: number;
   
   // Scene
   sceneGraph: SceneGraph;
@@ -163,7 +164,7 @@ export interface PhysicsState {
   setLoaded: (loaded: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setCameraView: (view: 'perspective' | 'topDown') => void;
-  setEnvironment: (env: Partial<{gravityZ: number, windX: number, windY: number, density: number, floorFriction: number}>) => void;
+  setEnvironment: (env: Partial<{gravityZ: number, windX: number, windY: number, density: number, floorFriction: number, floorBounce: number}>) => void;
   
   setSelectedNodeId: (id: string | null) => void;
   updateScene: (sceneGraph: SceneGraph) => void;
@@ -212,6 +213,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
   windY: 0,
   density: 0,
   floorFriction: 1.0,
+  floorBounce: 0.0,
   
   sceneGraph: initialScene,
   selectedNodeId: null,
@@ -252,9 +254,9 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     const preset = PRESETS[name as keyof typeof PRESETS] as any;
     if (!preset) return;
     if (preset.environment) {
-      set(preset.environment);
+      set({ windX: 0, windY: 0, floorBounce: 0, ...preset.environment });
     } else {
-      set({ windX: 0, windY: 0 });
+      set({ windX: 0, windY: 0, floorBounce: 0 });
     }
     get().recompile(preset.scene, null, true, true);
   },
@@ -829,7 +831,7 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         pulleyWheelId: '',
         leftTargetId: '',
         rightTargetId: ''
-      } : {})
+      } : {}),
     };
 
     if (isChild && selectedNodeId) {
@@ -856,10 +858,10 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     if (typeof window !== 'undefined') {
       (window as any).DISABLE_USEFRAME = false;
     }
-    const { gravityZ, windX, windY, density, floorFriction, model: oldModel, data: oldData } = get();
+    const { gravityZ, windX, windY, density, floorFriction, floorBounce, model: oldModel, data: oldData } = get();
     const sceneGraph = overrideScene ?? get().sceneGraph;
-    
-    const xml = compileToMJCF(sceneGraph, gravityZ, floorFriction, windX, windY, density);
+
+    const xml = compileToMJCF(sceneGraph, gravityZ, floorFriction, windX, windY, density, floorBounce);
     console.log("XML generated:\n", xml);
     if (typeof window !== 'undefined') {
       (window as any).compiledXML = xml;
@@ -872,6 +874,10 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         freshMujoco = await load_mujoco();
       }
       
+      // Free old model/data to prevent WASM heap exhaustion across recompiles
+      if (oldModel) { try { oldModel.free(); } catch (_) {} }
+      if (oldData)  { try { oldData.free();  } catch (_) {} }
+
       const newModel = freshMujoco.MjModel.from_xml_string(xml);
       console.log("newModel created");
       
@@ -965,6 +971,13 @@ export const useStore = create<PhysicsState>()((set, get) => ({
       });
     } catch (e) {
       console.error("Failed to compile MJCF:", e);
+      // MuJoCo WASM heap is exhausted — only a full page reload can recover
+      const msg = String(e);
+      if (msg.includes('Aborted') || msg.includes('enlarge memory') || msg.includes('abort')) {
+        alert('The physics engine ran out of memory after loading several heavy scenes.\n\nThe page will reload to free memory — your scene will be lost unless you saved it first.');
+        window.location.reload();
+        return;
+      }
       // Still update the sceneGraph so the UI reflects the change even if MuJoCo rejects it
       const updates: Partial<PhysicsState> = { sceneGraph };
       if (overrideSelectedId !== undefined) updates.selectedNodeId = overrideSelectedId;
