@@ -5,10 +5,11 @@ import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useMCPBridge } from './hooks/useMCPBridge';
 import { useStore, scaleMeshGeoms } from './store/useStore';
 import type { SceneGraph, SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload, FileText, ChevronDown, ChevronUp, Edit3 } from 'lucide-react';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload, FileText, ChevronDown, ChevronUp, Edit3, Printer } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState, type RefObject } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 
 // Simple robust markdown parser to convert basic markdown text to safe HTML
 // Markdown parser for note cards
@@ -1723,6 +1724,12 @@ const PulleyRopeMarkers = ({ sceneGraph, selectedNodeId, setSelectedNodeId }: an
 };
 
 
+const SceneCapture = ({ sceneRef }: { sceneRef: React.MutableRefObject<THREE.Scene | null> }) => {
+  const { scene } = useThree();
+  useEffect(() => { sceneRef.current = scene; }, [scene, sceneRef]);
+  return null;
+};
+
 const SceneVisuals = ({ model, data, mujoco, sceneGraph, selectedNodeId, setSelectedNodeId }: any) => {
   const geoms = useMemo(() => {
     if (!sceneGraph) return [];
@@ -2040,6 +2047,53 @@ function App() {
       alert('Failed to export JSON');
     }
   }, [sceneGraph, model, data, mujoco, noteCards]);
+
+  const threeSceneRef = useRef<THREE.Scene | null>(null);
+
+  const exportStl = useCallback(() => {
+    const scene = threeSceneRef.current;
+    if (!scene) { alert('Scene not ready'); return; }
+
+    const exportGroup = new THREE.Group();
+    scene.traverse((obj) => {
+      if (!(obj as THREE.Mesh).isMesh) return;
+      const mesh = obj as THREE.Mesh;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      if (!mats.some(m => (m as any).isMeshStandardMaterial)) return;
+      mesh.updateWorldMatrix(true, false);
+      const geo = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
+      exportGroup.add(new THREE.Mesh(geo));
+    });
+
+    // Normalize: fit the max dimension to a user-specified target in mm, centered at origin
+    const bbox = new THREE.Box3().setFromObject(exportGroup);
+    const size = bbox.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim > 0) {
+      const targetStr = window.prompt('Target max dimension (mm):', '150');
+      if (targetStr === null) return;
+      const targetMm = parseFloat(targetStr);
+      if (isNaN(targetMm) || targetMm <= 0) { alert('Invalid size'); return; }
+      const scale = targetMm / maxDim;
+      const center = bbox.getCenter(new THREE.Vector3());
+      const transform = new THREE.Matrix4()
+        .makeScale(scale, scale, scale)
+        .multiply(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
+      for (const child of exportGroup.children) {
+        (child as THREE.Mesh).geometry.applyMatrix4(transform);
+      }
+    }
+
+    const exporter = new STLExporter();
+    const result = exporter.parse(exportGroup, { binary: true }) as DataView;
+    const blob = new Blob([result.buffer as ArrayBuffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'physics_scene.stl';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
 
   const importJson = useCallback(() => {
     const input = document.createElement('input');
@@ -2396,7 +2450,7 @@ function App() {
               <Save className="w-4 h-4" />
             </button>
 
-            <button 
+            <button
               onClick={exportJson}
               className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
               title="Export JSON"
@@ -2404,7 +2458,15 @@ function App() {
               <Download className="w-4 h-4" />
             </button>
 
-            <button 
+            <button
+              onClick={exportStl}
+              className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
+              title="Export STL (3D print)"
+            >
+              <Printer className="w-4 h-4" />
+            </button>
+
+            <button
               onClick={importJson}
               className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
               title="Import JSON"
@@ -2462,6 +2524,15 @@ function App() {
           >
             <Eye className="w-4 h-4" /> <span className="hidden md:inline text-sm font-medium">{cameraView === 'topDown' ? 'Perspective' : 'Top Down'}</span>
           </button>
+          <a
+            href="https://github.com/tomgrek/physicssim"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center w-8 h-8 md:w-9 md:h-9 rounded-full border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none flex-shrink-0 cursor-pointer"
+            title="View on GitHub"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+          </a>
         </div>
       </header>
 
@@ -2719,6 +2790,7 @@ function App() {
           </div>
           
           <Canvas camera={CAMERA_CONFIG} shadows onPointerMissed={handlePointerMissed}>
+            <SceneCapture sceneRef={threeSceneRef} />
             <DropHandler addComponent={addComponent} />
             <color attach="background" args={['#f8fafc']} />
             <ambientLight intensity={0.6} />
