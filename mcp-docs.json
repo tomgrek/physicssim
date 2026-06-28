@@ -96,7 +96,8 @@
       "weldTargetId": "id of body to rigidly weld (closed-loop constraint)",
       "connectTargetId": "id of body for ball-socket point constraint",
       "connectAnchor": "[x,y,z] world-space anchor for connect constraint",
-      "script": "JavaScript control script running at 1000 Hz. IMPORTANT: all functions must be called with the 'api.' prefix — e.g. api.getTime(), api.setVelocity([...], 'bodyName'). Bare calls like getTime() will throw ReferenceError. Available: api.isKeyPressed(keyName), api.getPosition(bodyName), api.getVelocity(bodyName), api.getAngularVelocity(bodyName), api.getOrientation(bodyName), api.setPosition(pos, bodyName), api.setVelocity(vel, bodyName), api.setAngularVelocity(angvel, bodyName), api.getMass(bodyName), api.getJointPosition(jointName), api.getJointVelocity(jointName), api.applyForce(forceVec, bodyName), api.applyTorque(torqueVec, bodyName), api.applyJointForce(jointName, forceVal), api.setActuatorControl(actuatorName, ctrlVal), api.getTime(), api.getWind(), api.log(msg). To launch a body with an initial velocity on the first tick: 'if (api.getTime() === 0) { api.setVelocity([vx, vy, vz], \"bodyName\"); api.setAngularVelocity([wx, wy, wz], \"bodyName\"); }'"
+      "script": "JavaScript control script running at 1000 Hz. IMPORTANT: all functions must be called with the 'api.' prefix — e.g. api.getTime(), api.setVelocity([...], 'bodyName'). Bare calls like getTime() will throw ReferenceError. Available: api.isKeyPressed(keyName), api.getPosition(bodyName), api.getVelocity(bodyName), api.getAngularVelocity(bodyName), api.getOrientation(bodyName), api.setPosition(pos, bodyName), api.setVelocity(vel, bodyName), api.setAngularVelocity(angvel, bodyName), api.getMass(bodyName), api.getJointPosition(jointName), api.getJointVelocity(jointName), api.applyForce(forceVec, bodyName), api.applyTorque(torqueVec, bodyName), api.applyJointForce(jointName, forceVal), api.setActuatorControl(actuatorName, ctrlVal), api.getTime(), api.getWind(), api.log(msg). To launch a body with an initial velocity on the first tick: 'if (api.getTime() === 0) { api.setVelocity([vx, vy, vz], \"bodyName\"); api.setAngularVelocity([wx, wy, wz], \"bodyName\"); }'",
+      "scad": "string — raw OpenSCAD source code to procedurally compile into a dynamic mesh geometry"
     },
     "jointFields": {
       "name": "string — unique joint name",
@@ -124,6 +125,10 @@
       "faceWinding": "Use outward-facing CCW winding. Wrong winding causes inside-out contact normals and objects sinking through surfaces.",
       "bodyPos": "For a dynamic mesh whose Y-up base is at Y=0, set body_pos=[0,0,0]. The mesh will render with its MuJoCo origin at ground level. Adjust body_pos.z to raise/lower.",
       "goodUseCases": ["Static background scenery", "Decorative structures", "Dynamic convex polyhedra (pyramids, crystals, custom shapes)", "Multi-geom bodies (mesh + primitive sub-components)"]
+    },
+    "openScadNotes": {
+      "definition": "You can define procedural shapes using the scad property on a body node. Example: scad: 'difference() { cube([0.5,0.5,0.5], center=true); sphere(d=0.6); }'.",
+      "automaticCompilation": "If a body node specifies a scad property and geoms is omitted, the simulator automatically registers it as a dynamic mesh geom and compiles it to vertices and faces. The resulting dynamic mesh behaves as a physical body with collision detection."
     }
   },
   "examples": [
@@ -345,6 +350,11 @@
         "With windX=5, R_blade=0.9, 4 blades, pitch=18°: rotor reaches ~-1.9 rad/s at t=0.5s."
       ],
       "script": "const omega = api.getJointVelocity('rotor_hinge');\nconst [windX, windY] = api.getWind();\nconst R = api.getOrientation();\nconst ax = R[0], ay = R[3], az = R[6];\nconst Vw = windX * ax + windY * ay;\nconst numBlades = 4;\nconst R_blade = 0.9, r_hub = 0.15, pitch = 18 * Math.PI / 180, rho = 1.225;\nlet totalTorque = 0;\nconst N = 5, dr = (R_blade - r_hub) / N;\nfor (let i = 0; i < N; i++) {\n  const r = r_hub + (i + 0.5) * dr;\n  const Vt = -omega * r;\n  const Vrel = Math.sqrt(Vw * Vw + Vt * Vt);\n  if (Vrel > 0.05) {\n    const phi = Math.atan2(Math.abs(Vw), Math.abs(Vt));\n    const alpha = phi - pitch;\n    const CL = 1.5 * Math.sin(2 * alpha);\n    const CD = 0.08 + 1.2 * Math.sin(alpha) * Math.sin(alpha);\n    const chord = 0.22 * (1.0 - 0.3 * (r / R_blade));\n    const q = 0.5 * rho * Vrel * Vrel;\n    const dL = q * CL * chord * dr;\n    const dD = q * CD * chord * dr;\n    const signVw = Math.sign(Vw);\n    const dFt = -signVw * (dL * Math.sin(phi) - dD * Math.cos(phi));\n    totalTorque += dFt * r * numBlades;\n  }\n}\napi.applyJointForce('rotor_hinge', totalTorque);"
+    },
+    {
+      "title": "Procedural OpenSCAD Shape Spawning",
+      "description": "Spawn a procedural OpenSCAD body at height 2.5m using raw SCAD code, automatically compiling it into a dynamic mesh.",
+      "code": "physics_build_scene(bodies=[{\"id\":\"scad_gear\",\"name\":\"scad_gear\",\"pos\":[0,0,2.5],\"joints\":[{\"name\":\"gear_free\",\"type\":\"free\"}],\"scad\":\"difference() { cylinder(r=0.4, h=0.2, center=true, $fn=24); for(i=[0:5]) { rotate(i*60) translate([0.4,0,0]) cube([0.1,0.1,0.3], center=true); } }\"}])"
     }
   ]
 }

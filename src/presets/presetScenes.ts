@@ -2127,6 +2127,110 @@ export const bouncyBallsPreset: SceneGraph = (() => {
   return { nodes };
 })();
 
+export const openscadDemoPreset: SceneGraph = {
+  nodes: [
+    {
+      id: 'scad_container',
+      name: 'scad_container',
+      type: 'body',
+      pos: [0, 0, 0.4],
+      joints: [{ name: 'scad_container_free', type: 'free', initialVelocity: [0, 0, 0, 0, 0, 0] }],
+      geoms: [
+        {
+          name: 'scad_container_geom',
+          type: 'mesh',
+          size: [1],
+          rgba: [0.2, 0.5, 0.8, 1], // blue container
+          mass: 2.0,
+          condim: 3,
+          dynamic: true,
+          vertices: [
+            -0.4, 0, -0.4,
+             0.4, 0, -0.4,
+             0.4, 0,  0.4,
+            -0.4, 0,  0.4,
+            -0.4, 0.5, -0.4,
+             0.4, 0.5, -0.4,
+             0.4, 0.5,  0.4,
+            -0.4, 0.5,  0.4,
+            -0.325, 0.075, -0.325,
+             0.325, 0.075, -0.325,
+             0.325, 0.075,  0.325,
+            -0.325, 0.075,  0.325,
+            -0.325, 0.5, -0.325,
+             0.325, 0.5, -0.325,
+             0.325, 0.5,  0.325,
+            -0.325, 0.5,  0.325
+          ],
+          renderVertices: [
+            -0.4,  0.4, 0,
+             0.4,  0.4, 0,
+             0.4, -0.4, 0,
+            -0.4, -0.4, 0,
+            -0.4,  0.4, 0.5,
+             0.4,  0.4, 0.5,
+             0.4, -0.4, 0.5,
+            -0.4, -0.4, 0.5,
+            -0.325, 0.325, 0.075,
+             0.325, 0.325, 0.075,
+             0.325, -0.325, 0.075,
+            -0.325, -0.325, 0.075,
+            -0.325, 0.325, 0.5,
+             0.325, 0.325, 0.5,
+             0.325, -0.325, 0.5,
+            -0.325, -0.325, 0.5
+          ],
+          faces: [
+            0, 1, 2,  0, 2, 3,
+            0, 1, 5,  0, 5, 4,
+            1, 2, 6,  1, 6, 5,
+            2, 3, 7,  2, 7, 6,
+            3, 0, 4,  3, 4, 7,
+            4, 5, 13,  4, 13, 12,
+            5, 6, 14,  5, 14, 13,
+            6, 7, 15,  6, 15, 14,
+            7, 4, 12,  7, 12, 15,
+            8, 9, 10,  8, 10, 11,
+            8, 12, 13,  8, 13, 9,
+            9, 13, 14,  9, 14, 10,
+            10, 14, 15,  10, 15, 11,
+            11, 15, 12,  11, 12, 8
+          ]
+        }
+      ],
+      scad: `// OpenSCAD Showcase Scene\n// A hollow box that catches falling spheres!\ndifference() {\n  cube([0.8, 0.8, 0.5], center=true);\n  translate([0, 0, 0.075]) cube([0.65, 0.65, 0.5], center=true);\n}`,
+      children: []
+    },
+    {
+      id: 'ball_red',
+      name: 'ball_red',
+      type: 'body',
+      pos: [-0.1, 0, 1.8],
+      joints: [{ name: 'ball_red_free', type: 'free', initialVelocity: [0, 0, 0, 0, 0, 0] }],
+      geoms: [{ name: 'ball_red_geom', type: 'sphere', size: [0.12], rgba: [0.8, 0.2, 0.2, 1], mass: 0.5 }],
+      children: []
+    },
+    {
+      id: 'ball_green',
+      name: 'ball_green',
+      type: 'body',
+      pos: [0.15, 0, 2.3],
+      joints: [{ name: 'ball_green_free', type: 'free', initialVelocity: [0, 0, 0, 0, 0, 0] }],
+      geoms: [{ name: 'ball_green_geom', type: 'sphere', size: [0.10], rgba: [0.2, 0.8, 0.2, 1], mass: 0.4 }],
+      children: []
+    },
+    {
+      id: 'ball_yellow',
+      name: 'ball_yellow',
+      type: 'body',
+      pos: [0, 0, 2.8],
+      joints: [{ name: 'ball_yellow_free', type: 'free', initialVelocity: [0, 0, 0, 0, 0, 0] }],
+      geoms: [{ name: 'ball_yellow_geom', type: 'sphere', size: [0.15], rgba: [0.8, 0.8, 0.2, 1], mass: 0.8 }],
+      children: []
+    }
+  ]
+};
+
 export const PRESETS = {
   empty: {
     name: 'Blank (Empty)',
@@ -2219,5 +2323,9 @@ export const PRESETS = {
     name: 'Bouncy Balls',
     scene: bouncyBallsPreset,
     environment: { floorBounce: 0.85 }
+  },
+  openscad_demo: {
+    name: 'OpenSCAD Showcase',
+    scene: openscadDemoPreset
   }
 };

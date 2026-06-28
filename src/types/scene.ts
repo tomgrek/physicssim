@@ -79,6 +79,7 @@ export interface SceneNode {
   pulleyWheelId?: string;
   isAerodynamic?: boolean;
   script?: string;
+  scad?: string;
 }
 
 export interface SceneGraph {

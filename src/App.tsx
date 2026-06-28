@@ -1,15 +1,17 @@
 
 import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid, Html } from '@react-three/drei';
+import { OrbitControls, Grid } from '@react-three/drei';
 import { useMuJoCoInit } from './hooks/useMuJoCo';
 import { useMCPBridge } from './hooks/useMCPBridge';
 import { useStore, scaleMeshGeoms } from './store/useStore';
 import type { SceneGraph, SceneNode } from './types/scene';
-import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload, FileText, ChevronDown, ChevronUp, Edit3, Printer } from 'lucide-react';
+import { Play, Square, Settings2, SlidersHorizontal, Settings, Box, Circle, X, RotateCcw, Eye, Trash2, Layers, CircleDot, Zap, Info, Triangle, Disc, Code, Menu, Shapes, Minimize2, Save, Download, Upload, FileText, ChevronDown, ChevronUp, Edit3, Printer, Scissors, Sparkles } from 'lucide-react';
 import { useRef, useMemo, useEffect, useCallback, useState, type RefObject } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
+import { SimplifyModifier } from 'three/examples/jsm/modifiers/SimplifyModifier.js';
+import { loadCompiler, compileSCAD, isCompilerReady } from './utils/openscad';
 
 // Simple robust markdown parser to convert basic markdown text to safe HTML
 // Markdown parser for note cards
@@ -1018,7 +1020,7 @@ const CameraController = () => {
 
 // Drop Handler for precise spawning
 const DropHandler = ({ addComponent }: { addComponent: (type: any, pos: [number, number, number]) => void }) => {
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
   
   useEffect(() => {
     const handler = (e: DragEvent) => {
@@ -1026,11 +1028,7 @@ const DropHandler = ({ addComponent }: { addComponent: (type: any, pos: [number,
       const type = e.dataTransfer?.getData('type') as any;
       if (!type) return;
       
-      const canvasEl = document.querySelector('canvas');
-      let rect = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-      if (canvasEl) {
-        rect = canvasEl.getBoundingClientRect();
-      }
+      const rect = gl.domElement.getBoundingClientRect();
       const xLocal = e.clientX - rect.left;
       const yLocal = e.clientY - rect.top;
 
@@ -1068,7 +1066,7 @@ const DropHandler = ({ addComponent }: { addComponent: (type: any, pos: [number,
       window.removeEventListener('drop', handler);
       window.removeEventListener('dragover', dragOverHandler);
     };
-  }, [camera, addComponent]);
+  }, [camera, gl, addComponent]);
   
   return null;
 };
@@ -1942,6 +1940,51 @@ function makePresetNoteCard(presetKey: string): { id: string; markdown: string; 
   return { id: `preset_note_${presetKey}`, markdown: md, minimized: false, x: 16, y: 16 };
 }
 
+function generateScadForNode(node: any): string {
+  const geom = node.geoms?.[0];
+  if (!geom) return '// No geometry found';
+  
+  if (node.isWedge) {
+    const w = node.width || 2.0;
+    const h = node.height || 0.5;
+    const d = node.depth || 1.0;
+    return `// Wedge shape\nlinear_extrude(height=${d}, center=true)\n  polygon([[0,0], [${w},0], [0,${h}]]);`;
+  }
+  
+  if (node.id.includes('gear')) {
+    const r = geom.size?.[0] || 0.5;
+    return `// Gear shape\ndifference() {\n  cylinder(h=0.08, r=${r}, center=true, $fn=30);\n  cylinder(h=0.12, r=0.08, center=true, $fn=16);\n}`;
+  }
+
+  switch (geom.type) {
+    case 'box': {
+      const sx = (geom.size?.[0] || 0.2) * 2;
+      const sy = (geom.size?.[1] || 0.2) * 2;
+      const sz = (geom.size?.[2] || 0.2) * 2;
+      return `// Box shape\ncube([${sx.toFixed(3)}, ${sy.toFixed(3)}, ${sz.toFixed(3)}], center=true);`;
+    }
+    case 'sphere': {
+      const r = geom.size?.[0] || 0.2;
+      return `// Sphere shape\nsphere(r=${r.toFixed(3)}, $fn=24);`;
+    }
+    case 'cylinder': {
+      const r = geom.size?.[0] || 0.2;
+      const h = (geom.size?.[1] || 0.1) * 2;
+      return `// Cylinder shape\ncylinder(h=${h.toFixed(3)}, r=${r.toFixed(3)}, center=true, $fn=24);`;
+    }
+    case 'capsule': {
+      const r = geom.size?.[0] || 0.04;
+      const h = geom.size?.[1] || 0.2;
+      return `// Capsule shape\nhull() {\n  translate([0, 0, -${h.toFixed(3)}]) sphere(r=${r.toFixed(3)}, $fn=16);\n  translate([0, 0, ${h.toFixed(3)}]) sphere(r=${r.toFixed(3)}, $fn=16);\n}`;
+    }
+    case 'mesh': {
+      return `// Mesh geometry representation\n// Note: editing this will overwrite the manual vertices\ncube([0.5, 0.5, 0.5], center=true);`;
+    }
+    default:
+      return `// Primitive shape (${geom.type})\ncube([0.4, 0.4, 0.4], center=true);`;
+  }
+}
+
 function App() {
   if (typeof window !== 'undefined') {
     (window as any).useStore = useStore;
@@ -1954,6 +1997,9 @@ function App() {
   const [meshEditorGeom, setMeshEditorGeom] = useState<string | null>(null);
   const [meshEditorText, setMeshEditorText] = useState('');
   const [meshEditorError, setMeshEditorError] = useState<string | null>(null);
+  const [meshSimplifierGeom, setMeshSimplifierGeom] = useState<string | null>(null);
+  const [simplifyRatio, setSimplifyRatio] = useState(0.5);
+  const [meshSimplifierError, setMeshSimplifierError] = useState<string | null>(null);
   const [showApiRef, setShowApiRef] = useState(false);
   const [propertiesWidth, setPropertiesWidth] = useState(380);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
@@ -1962,6 +2008,10 @@ function App() {
   const [activeGeomIndex, setActiveGeomIndex] = useState(0);
   const [noteCards, setNoteCards] = useState<{ id: string; markdown: string; minimized: boolean; x: number; y: number }[]>([]);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [scadText, setScadText] = useState('');
+  const [scadError, setScadError] = useState<string | null>(null);
+  const [isScadCompiling, setIsScadCompiling] = useState(false);
+  const [isCompilerLoading, setIsCompilerLoading] = useState(false);
   const axisCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Expose noteCards state to MCP bridge
@@ -1969,6 +2019,14 @@ function App() {
     (window as any)._physics_getNoteCards = () => noteCards;
     (window as any)._physics_setNoteCards = (cards: typeof noteCards) => setNoteCards(cards);
   }, [noteCards]);
+
+  // Pre-load the OpenSCAD compiler in the background after app initialization
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadCompiler().catch(err => console.warn('Failed to pre-load OpenSCAD compiler in background:', err));
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -2228,14 +2286,26 @@ function App() {
     return found as any;
   }, [selectedNodeId, sceneGraph]);
 
-  // Sync selected node's script into local text state
+  // Sync selected node's script and scad code into local text state
   useEffect(() => {
     if (selectedNode) {
       setScriptText(selectedNode.script || '');
       setScriptError(null);
+      
+      let currentScad = selectedNode.scad;
+      if (currentScad === undefined) {
+        currentScad = generateScadForNode(selectedNode);
+        // Persist the generated scad field to the node in store
+        useStore.getState().updateNode(selectedNode.id, { scad: currentScad });
+      }
+      
+      setScadText(currentScad || '');
+      setScadError(null);
     } else {
       setScriptText('');
       setScriptError(null);
+      setScadText('');
+      setScadError(null);
     }
     setActiveGeomIndex(0);
   }, [selectedNodeId, selectedNode?.id]);
@@ -2253,6 +2323,178 @@ function App() {
       setScriptError(e.message || 'Compilation Error');
     }
   }, [selectedNode, scriptText, updateNodeScript]);
+
+  const handleCompileScad = useCallback(async () => {
+    if (!selectedNode) return;
+    setIsScadCompiling(true);
+    setScadError(null);
+    try {
+      const compiled = await compileSCAD(scadText);
+      useStore.getState().updateNodeScad(selectedNode.id, scadText, compiled);
+    } catch (e: any) {
+      console.error('OpenSCAD Compilation Error:', e);
+      setScadError(e.message || 'Compilation failed.');
+    } finally {
+      setIsScadCompiling(false);
+    }
+  }, [selectedNode, scadText]);
+
+  const handleSimplifyMesh = useCallback((g: any) => {
+    try {
+      setMeshSimplifierError(null);
+      if (!g.vertices || g.vertices.length < 9) {
+        throw new Error('Not enough vertices to simplify (need at least 3 triangles / 9 coordinates).');
+      }
+
+      // 1. Weld/deduplicate vertices first so that the edge collapse algorithm works properly on a connected mesh
+      const uniqueInputVerts: number[] = [];
+      const inputFaces: number[] = [];
+      const inputVertMap = new Map<string, number>();
+
+      for (let i = 0; i < g.vertices.length; i += 3) {
+        const x = g.vertices[i];
+        const y = g.vertices[i + 1];
+        const z = g.vertices[i + 2];
+        const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+        let idx = inputVertMap.get(key);
+        if (idx === undefined) {
+          idx = uniqueInputVerts.length / 3;
+          uniqueInputVerts.push(x, y, z);
+          inputVertMap.set(key, idx);
+        }
+      }
+
+      if (g.faces && g.faces.length > 0) {
+        for (let i = 0; i < g.faces.length; i++) {
+          const oldIdx = g.faces[i];
+          const vx = g.vertices[oldIdx * 3];
+          const vy = g.vertices[oldIdx * 3 + 1];
+          const vz = g.vertices[oldIdx * 3 + 2];
+          const key = `${vx.toFixed(5)},${vy.toFixed(5)},${vz.toFixed(5)}`;
+          inputFaces.push(inputVertMap.get(key)!);
+        }
+      } else {
+        // If not indexed, build faces sequentially
+        for (let i = 0; i < g.vertices.length; i += 3) {
+          const x = g.vertices[i];
+          const y = g.vertices[i + 1];
+          const z = g.vertices[i + 2];
+          const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+          inputFaces.push(inputVertMap.get(key)!);
+        }
+      }
+
+      // 2. Create a THREE.BufferGeometry from the welded geometry
+      const geometry = new THREE.BufferGeometry();
+      const positionArray = new Float32Array(uniqueInputVerts);
+      geometry.setAttribute('position', new THREE.BufferAttribute(positionArray, 3));
+      geometry.setIndex(inputFaces);
+
+      // 3. Compute the number of vertices to remove
+      const originalVertexCount = uniqueInputVerts.length / 3;
+      const targetCount = Math.max(4, Math.floor(originalVertexCount * simplifyRatio));
+      const countToRemove = originalVertexCount - targetCount;
+
+      if (countToRemove <= 0) {
+        throw new Error('Already at or below target vertex count. Try a lower quality/ratio.');
+      }
+
+      // 4. Apply the SimplifyModifier
+      const modifier = new SimplifyModifier();
+      const simplifiedGeometry = modifier.modify(geometry, countToRemove);
+      
+      const simplifiedPositions = simplifiedGeometry.attributes.position.array;
+      const simplifiedIndex = simplifiedGeometry.index ? simplifiedGeometry.index.array : null;
+      if (!simplifiedPositions || simplifiedPositions.length === 0) {
+        throw new Error('Simplification produced an empty geometry.');
+      }
+
+      // 5. Extract the resulting vertices and faces using the index array from SimplifyModifier
+      const uniqueVerts: number[] = [];
+      const faces: number[] = [];
+      const vertMap = new Map<number, number>();
+
+      if (simplifiedIndex) {
+        for (let i = 0; i < simplifiedIndex.length; i++) {
+          const oldIdx = simplifiedIndex[i];
+          let newIdx = vertMap.get(oldIdx);
+          if (newIdx === undefined) {
+            newIdx = uniqueVerts.length / 3;
+            const vx = simplifiedPositions[oldIdx * 3];
+            const vy = simplifiedPositions[oldIdx * 3 + 1];
+            const vz = simplifiedPositions[oldIdx * 3 + 2];
+            uniqueVerts.push(
+              Number(vx.toFixed(5)),
+              Number(vy.toFixed(5)),
+              Number(vz.toFixed(5))
+            );
+            vertMap.set(oldIdx, newIdx);
+          }
+          faces.push(newIdx);
+        }
+      } else {
+        // Fallback for non-indexed output
+        const vertMapStr = new Map<string, number>();
+        for (let i = 0; i < simplifiedPositions.length; i += 3) {
+          const x = simplifiedPositions[i];
+          const y = simplifiedPositions[i + 1];
+          const z = simplifiedPositions[i + 2];
+          const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+          let idx = vertMapStr.get(key);
+          if (idx === undefined) {
+            idx = uniqueVerts.length / 3;
+            uniqueVerts.push(
+              Number(x.toFixed(5)),
+              Number(y.toFixed(5)),
+              Number(z.toFixed(5))
+            );
+            vertMapStr.set(key, idx);
+          }
+          faces.push(idx);
+        }
+      }
+
+      if (uniqueVerts.length < 9) {
+        throw new Error('Simplification reduced geometry below minimum visible threshold.');
+      }
+
+      // 6. Swap Y/Z coordinates for renderVertices if this is a dynamic mesh (MuJoCo space swap)
+      let newRenderVerts: number[] | undefined;
+      if (g.dynamic) {
+        newRenderVerts = [];
+        for (let i = 0; i < uniqueVerts.length; i += 3) {
+          const x = uniqueVerts[i], y = uniqueVerts[i+1], z = uniqueVerts[i+2];
+          newRenderVerts.push(+x.toFixed(5), +(-z).toFixed(5), +y.toFixed(5));
+        }
+      }
+
+      // 7. Update the sceneGraph with the new simplified vertices/faces
+      const newScene = JSON.parse(JSON.stringify(useStore.getState().sceneGraph));
+      const traverse = (nodes: any[]): boolean => {
+        for (const node of nodes) {
+          const idx = node.geoms?.findIndex((ng: any) => ng.name === g.name);
+          if (idx >= 0) {
+            node.geoms[idx] = {
+              ...node.geoms[idx],
+              vertices: uniqueVerts,
+              faces,
+              ...(newRenderVerts ? { renderVertices: newRenderVerts } : {})
+            };
+            return true;
+          }
+          if (traverse(node.children)) return true;
+        }
+        return false;
+      };
+      traverse(newScene.nodes);
+      useStore.getState().updateScene(newScene);
+      
+      setMeshSimplifierGeom(null);
+    } catch (err: any) {
+      console.error('Mesh simplification failed:', err);
+      setMeshSimplifierError(err.message || 'Mesh simplification failed.');
+    }
+  }, [simplifyRatio]);
 
   // Utility to handle moving free bodies
   const handleMove = (axis: 0 | 1 | 2, val: number) => {
@@ -2285,7 +2527,7 @@ function App() {
     }
   };
 
-  const handleAddComponentClick = (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh') => {
+  const handleAddComponentClick = (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh' | 'openscad') => {
     if (selectedNodeId) {
       const parentNode = findNodeById(sceneGraph.nodes, selectedNodeId);
       if (parentNode) {
@@ -2421,6 +2663,7 @@ function App() {
                 <option value="traditional_windmill">💨 Traditional Windmill (4-Blade)</option>
                 <option value="drone">🛸 Quadcopter Drone</option>
                 <option value="bouncy_balls">🎱 Bouncy Balls</option>
+                <option value="openscad_demo">🛠️ OpenSCAD Showcase</option>
               </optgroup>
 
               {/* User Presets */}
@@ -2736,6 +2979,19 @@ function App() {
               <div className="flex flex-col">
                 <span className="text-xs font-semibold text-slate-700">Mesh</span>
                 <span className="text-[10px] text-slate-400">Custom geometry (visual)</span>
+              </div>
+            </div>
+
+            <div
+              draggable
+              onDragStart={(e) => handleDragStart(e, 'openscad')}
+              onClick={() => handleAddComponentClick('openscad')}
+              className="p-2.5 border border-slate-200 rounded-lg bg-white shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-300 hover:shadow transition-all group"
+            >
+              <Settings className="w-4 h-4 text-blue-500 group-hover:scale-110 transition-transform animate-spin-slow" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-700">OpenSCAD Shape</span>
+                <span className="text-[10px] text-slate-400">Procedural CAD shape</span>
               </div>
             </div>
 
@@ -4199,10 +4455,23 @@ function App() {
                                 setMeshEditorText(`# vertices (x y z, one per line — Three.js Y-up space)\n${vLines.join('\n')}\n\n# faces (i j k triangle indices, one per line)\n${fLines.join('\n')}`);
                                 setMeshEditorError(null);
                                 setMeshEditorGeom(g.name);
+                                setMeshSimplifierGeom(null); // Close simplifier if open
                               }}
                               className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded text-[10px] font-semibold text-violet-700 transition-colors cursor-pointer"
                             >
                               <Code className="w-3 h-3" /> {meshEditorGeom === g.name ? 'Close Editor' : 'Edit Vertices'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (meshSimplifierGeom === g.name) { setMeshSimplifierGeom(null); return; }
+                                setMeshSimplifierGeom(g.name);
+                                setMeshSimplifierError(null);
+                                setMeshEditorGeom(null); // Close editor if open
+                              }}
+                              className={`flex items-center justify-center gap-1 px-2.5 py-1.5 border rounded text-[10px] font-semibold transition-colors cursor-pointer ${meshSimplifierGeom === g.name ? 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-700' : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-600'}`}
+                              title="Simplify mesh (reduce vertex/triangle count)"
+                            >
+                              <Scissors className="w-3 h-3" /> {meshSimplifierGeom === g.name ? 'Close' : 'Simplify'}
                             </button>
                             <button
                               onClick={() => {
@@ -4299,13 +4568,56 @@ function App() {
                                 }}
                                 className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded text-[10px] font-semibold cursor-pointer transition-colors"
                               >
-                                Apply Mesh
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                                  Apply Mesh
+                                </button>
+                              </div>
+                            )}
+                            {meshSimplifierGeom === g.name && (
+                              <div className="flex flex-col gap-2 p-2 bg-amber-50/50 rounded border border-amber-100 mt-1">
+                                <div className="flex items-center justify-between text-[10px] font-semibold text-slate-700">
+                                  <span>Target Quality:</span>
+                                  <span className="font-mono text-amber-700 font-bold">{(simplifyRatio * 100).toFixed(0)}% vertices</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="0.05"
+                                  max="0.95"
+                                  step="0.05"
+                                  value={simplifyRatio}
+                                  onChange={(e) => setSimplifyRatio(parseFloat(e.target.value))}
+                                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-amber-600 focus:outline-none"
+                                />
+                                <div className="flex justify-between text-[8px] text-slate-400">
+                                  <span>High Simplification (5% kept)</span>
+                                  <span>Low Simplification (95% kept)</span>
+                                </div>
+
+                                {meshSimplifierError && (
+                                  <div className="text-[9px] text-amber-800 bg-amber-100/60 border border-amber-200 rounded p-1.5 font-mono">
+                                    {meshSimplifierError}
+                                  </div>
+                                )}
+
+                                <div className="flex justify-end gap-1.5 mt-1">
+                                  <button
+                                    onClick={() => setMeshSimplifierGeom(null)}
+                                    className="px-2 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-[10px] text-slate-600 font-semibold rounded cursor-pointer transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => handleSimplifyMesh(g)}
+                                    className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-semibold rounded cursor-pointer shadow transition-colors flex items-center gap-1"
+                                  >
+                                    <Sparkles className="w-3 h-3" />
+                                    Simplify Mesh
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                   ))}
                 </div>
                 );
@@ -4390,6 +4702,131 @@ function App() {
                         </option>
                       ))}
                     </select>
+                  </div>
+                </div>
+              )}
+
+              {/* OpenSCAD Editor Card */}
+              {selectedNode.scad !== undefined && (
+                <div className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2.5">
+                  <h3 className="text-sm font-medium text-slate-700 border-b border-slate-100 pb-2 mb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 font-semibold text-slate-800">
+                      <Settings className="w-4 h-4 text-violet-500" />
+                      OpenSCAD CAD Code
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {isScadCompiling ? (
+                        <span className="flex items-center gap-1 text-[10px] font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full border border-amber-100 animate-pulse">
+                          Compiling...
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-medium text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded-full border border-slate-100">
+                          CAD Shape
+                        </span>
+                      )}
+                    </div>
+                  </h3>
+
+                  <p className="text-[10px] text-slate-400 -mt-1 leading-tight">
+                    Write constructive solid geometry code to generate custom physics structures.
+                  </p>
+
+                  {!isCompilerReady() && (
+                    <div className="text-[9px] text-violet-600 font-semibold bg-violet-50 border border-violet-100/60 p-1.5 rounded text-center leading-snug animate-pulse">
+                      🌐 Loading CAD engine in background...
+                    </div>
+                  )}
+
+                  {/* Templates Selector */}
+                  <div className="flex items-center justify-between text-xs text-slate-500 gap-1.5 bg-slate-50 p-1.5 rounded-md border border-slate-100">
+                    <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">Templates:</span>
+                    <select
+                      onChange={(e) => {
+                        const templateVal = e.target.value;
+                        if (templateVal === 'hollow_cube') {
+                          setScadText(`// Hollow Cube\ndifference() {\n  cube([0.6, 0.6, 0.6], center=true);\n  sphere(d=0.75, $fn=24);\n}`);
+                        } else if (templateVal === 'wheel') {
+                          setScadText(`// Wheel with Hole\ndifference() {\n  cylinder(h=0.15, r=0.35, center=true, $fn=30);\n  cylinder(h=0.2, r=0.08, center=true, $fn=16);\n}`);
+                        } else if (templateVal === 'wedge') {
+                          setScadText(`// Wedge with multiple holes\ndifference() {\n  // Base wedge block\n  linear_extrude(height=0.4, center=true)\n    polygon([[0,0], [1.0,0], [0,0.5]]);\n  \n  // Cylindrical holes\n  translate([0.2, 0.1, 0])\n    cylinder(h=0.5, r=0.08, center=true, $fn=16);\n  translate([0.5, 0.15, 0])\n    cylinder(h=0.5, r=0.08, center=true, $fn=16);\n}`);
+                        } else if (templateVal === 'funnel') {
+                          setScadText(`// Funnel / Bowl\ndifference() {\n  cylinder(h=0.4, r1=0.15, r2=0.4, center=true, $fn=24);\n  translate([0, 0, 0.05])\n    cylinder(h=0.4, r1=0.1, r2=0.38, center=true, $fn=24);\n  // vertical passage hole\n  cylinder(h=0.5, r=0.05, center=true, $fn=16);\n}`);
+                        } else if (templateVal === 'clear') {
+                          setScadText('');
+                        }
+                        e.target.value = ''; // Reset selection
+                      }}
+                      className="text-xs bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 outline-none focus:border-blue-500 cursor-pointer"
+                    >
+                      <option value="">-- Select Template --</option>
+                      <option value="hollow_cube">Hollow Cube</option>
+                      <option value="wheel">Wheel with Hole</option>
+                      <option value="wedge">Wedge with Holes</option>
+                      <option value="funnel">Funnel / Bowl</option>
+                      <option value="clear">Clear Editor</option>
+                    </select>
+                  </div>
+
+                  {/* Text Area Code Editor */}
+                  <div className="relative">
+                    <textarea
+                      value={scadText}
+                      onChange={(e) => setScadText(e.target.value)}
+                      placeholder="// Write OpenSCAD here... e.g. cube(10);"
+                      className="w-full h-44 font-mono text-[11px] leading-relaxed p-2.5 bg-slate-950 text-violet-300 rounded-lg border border-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent resize-y shadow-inner"
+                      spellCheck={false}
+                    />
+                    <div className="absolute right-2.5 bottom-2.5 text-[8px] font-mono text-slate-600 bg-slate-900/50 px-1 rounded pointer-events-none select-none border border-slate-800">
+                      SCAD
+                    </div>
+                  </div>
+
+                  {/* Compilation Error Display */}
+                  {scadError && (
+                    <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-[10px] flex gap-1.5 items-start leading-tight">
+                      <span className="font-bold shrink-0">⚠️ Error:</span>
+                      <span className="font-mono text-slate-700 break-all">{scadError}</span>
+                    </div>
+                  )}
+
+                  {/* Action Buttons Row */}
+                  <div className="flex gap-2 items-center justify-between">
+                    <button
+                      onClick={async () => {
+                        setIsCompilerLoading(true);
+                        try {
+                          const createOpenSCAD = await loadCompiler();
+                          const compiler = await createOpenSCAD();
+                          const stlText = await compiler.renderToStl(scadText);
+                          
+                          const blob = new Blob([stlText], { type: 'text/plain' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `${selectedNode.name || 'openscad_shape'}.stl`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        } catch (e: any) {
+                          alert('Failed to export OpenSCAD STL: ' + e.message);
+                        } finally {
+                          setIsCompilerLoading(false);
+                        }
+                      }}
+                      disabled={isCompilerLoading || isScadCompiling}
+                      className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 disabled:text-slate-400 transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      Export STL (3D Print)
+                    </button>
+
+                    <button
+                      onClick={handleCompileScad}
+                      disabled={isScadCompiling || isCompilerLoading}
+                      className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-400 active:bg-violet-800 text-white rounded-lg text-[11px] font-semibold shadow transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      {isScadCompiling ? 'Compiling...' : 'Compile & Update'}
+                    </button>
                   </div>
                 </div>
               )}

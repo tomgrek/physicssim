@@ -92,7 +92,7 @@ export const compileToMJCF = (
   const toMjcfVerts = (verts: number[]) => {
     const out: number[] = [];
     for (let i = 0; i < verts.length; i += 3) {
-      out.push(verts[i], verts[i + 2], verts[i + 1]);
+      out.push(verts[i], -verts[i + 2], verts[i + 1]);
     }
     return out;
   };

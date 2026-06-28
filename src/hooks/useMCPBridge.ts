@@ -6,6 +6,32 @@
 import { useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { compileToMJCF } from '../utils/mjcf';
+import { compileSCAD } from '../utils/openscad';
+
+const autoCompileScad = async (nodes: any[]) => {
+  const promises: Promise<void>[] = [];
+  const traverseAndCompile = (nodesList: any[]) => {
+    if (!nodesList) return;
+    for (const node of nodesList) {
+      if (node.scad) {
+        const promise = (async () => {
+          try {
+            const compiled = await compileSCAD(node.scad);
+            useStore.getState().updateNodeScad(node.id, node.scad, compiled);
+          } catch (err) {
+            console.error(`Failed to auto-compile SCAD for node ${node.id}:`, err);
+          }
+        })();
+        promises.push(promise);
+      }
+      traverseAndCompile(node.children);
+    }
+  };
+  traverseAndCompile(nodes);
+  if (promises.length > 0) {
+    await Promise.all(promises);
+  }
+};
 
 export function useMCPBridge() {
   useEffect(() => {
@@ -697,6 +723,11 @@ export function useMCPBridge() {
         case 'UPDATE_SCENE': {
           if (!msg.sceneGraph) return { ok: false, error: 'Missing sceneGraph' };
           store.updateScene(msg.sceneGraph);
+          if (msg.sceneGraph.nodes) {
+            autoCompileScad(msg.sceneGraph.nodes).catch(err => {
+              console.error('Error auto-compiling SCAD in UPDATE_SCENE:', err);
+            });
+          }
           return { ok: true };
         }
 
@@ -761,6 +792,8 @@ export function useMCPBridge() {
               weldTargetId:  'string — id of body to weld to (closed-loop rigid constraint)',
               connectTargetId:'string — id of body to connect to via a ball-and-socket point constraint',
               connectAnchor: 'number[3] — world-space anchor point for the connect constraint',
+              script:        'string — JavaScript control script running at 1000 Hz',
+              scad:          'string — raw OpenSCAD code to compile into a dynamic mesh geometry',
             },
             tips: [
               'Compound shapes: add multiple geoms to one body with different pos/quat/euler offsets',
@@ -781,6 +814,7 @@ export function useMCPBridge() {
               'Dynamic mesh renderVertices: just swap Y↔Z on each Y-up vertex: (x,y,z)→(x,-z,y). Do NOT subtract centroid. MuJoCo recenters internally.',
               'Dynamic mesh face winding: use outward-facing CCW winding. Wrong winding causes inside-out contacts and objects sinking through surfaces.',
               'Dynamic mesh body pos: set body_pos=[0,0,0] to place mesh where its Y-up base sits. Adjust body_pos.z to raise/lower.',
+              'OpenSCAD shapes: set scad="cube([0.5,0.5,0.5]);" on a body node. If geoms is omitted, it automatically creates a dynamic mesh geom and compiles the SCAD code to vertices/faces.',
               'Working example: mesh_collision preset (pyramid + ramp with full collision).',
               'Bouncy objects: set solref=[0.04, 0.2] and solimp=[0.99, 0.9999, 0.0001, 0.5, 2]. dampingRatio 0.2 = lively bounce. The floor has dampingRatio=0.0 so ball+floor averages to 0.1 (still bouncy).',
               'Contact blending: two geoms in contact average their solref/solimp. Keep this in mind when tuning — a non-bouncy floor (dampingRatio=1.0) will halve any ball\'s effective bounce.',
@@ -815,6 +849,8 @@ export function useMCPBridge() {
             ...(g.solimp      !== undefined ? { solimp: g.solimp }   : {}),
             ...(g.vertices    !== undefined ? { vertices: g.vertices }: {}),
             ...(g.faces       !== undefined ? { faces: g.faces }     : {}),
+            ...(g.dynamic     !== undefined ? { dynamic: g.dynamic } : {}),
+            ...(g.renderVertices !== undefined ? { renderVertices: g.renderVertices } : {}),
           });
 
           const fillJointDefaults = (j: any, bodyName: string, idx: number) => ({
@@ -839,7 +875,7 @@ export function useMCPBridge() {
               pos:      b.pos     ?? [0, 0, 1],
               ...(b.quat  !== undefined ? { quat: b.quat }   : {}),
               ...(b.euler !== undefined ? { euler: b.euler } : {}),
-              geoms:    (b.geoms   ?? [{ type: 'box', size: [0.25, 0.25, 0.25] }])
+              geoms:    (b.geoms   ?? (b.scad !== undefined ? [{ type: 'mesh', size: [1], dynamic: true }] : [{ type: 'box', size: [0.25, 0.25, 0.25] }]))
                           .map((g: any, i: number) => fillGeomDefaults(g, name, i)),
               joints:   (b.joints  ?? [{ type: 'free' }])
                           .map((j: any, i: number) => fillJointDefaults(j, name, i)),
@@ -850,11 +886,15 @@ export function useMCPBridge() {
               ...(b.connectTargetId !== undefined ? { connectTargetId: b.connectTargetId } : {}),
               ...(b.connectAnchor   !== undefined ? { connectAnchor: b.connectAnchor }     : {}),
               ...(b.script          !== undefined ? { script: b.script }                   : {}),
+              ...(b.scad            !== undefined ? { scad: b.scad }                       : {}),
             };
           };
 
           const nodes = bodies.map(fillBodyDefaults);
           store.updateScene({ nodes });
+          autoCompileScad(nodes).catch(err => {
+            console.error('Error auto-compiling SCAD in BUILD_SCENE:', err);
+          });
           return { ok: true, nodeCount: nodes.length };
         }
 

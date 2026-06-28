@@ -191,7 +191,8 @@ export interface PhysicsState {
   updateRopeParams: (id: string, params: { pulleyWheelId?: string; leftTargetId?: string; rightTargetId?: string }) => void;
   
   setParentUnderSelected: (val: boolean) => void;
-  addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh', position: number[]) => void;
+  addComponent: (type: 'box' | 'sphere' | 'capsule' | 'cylinder' | 'bob' | 'gear' | 'wedge' | 'pulley_wheel' | 'pulley_rope' | 'mesh' | 'openscad', position: number[]) => void;
+  updateNodeScad: (id: string, scadCode: string, compiledData: { vertices: number[], faces: number[], renderVertices: number[] }) => void;
   recompile: (overrideScene?: SceneGraph, overrideSelectedId?: string | null, forceReset?: boolean, keepPreset?: boolean) => void;
   loadPreset: (name: string) => void;
   resetSimulation: () => void;
@@ -646,6 +647,33 @@ export const useStore = create<PhysicsState>()((set, get) => ({
     // Note: Live updates do not force model recompiles to support hot-editing of control gains!
   },
 
+  updateNodeScad: (id, scad, compiledData) => {
+    const newScene = JSON.parse(JSON.stringify(get().sceneGraph));
+    const traverse = (nodes: any[]) => {
+      if (!nodes) return false;
+      for (const node of nodes) {
+        if (node.id === id) {
+          node.scad = scad;
+          if (node.geoms && node.geoms.length > 0) {
+            const meshGeom = node.geoms.find((g: any) => g.type === 'mesh');
+            if (meshGeom) {
+              meshGeom.vertices = compiledData.vertices;
+              meshGeom.faces = compiledData.faces;
+              meshGeom.renderVertices = compiledData.renderVertices;
+            }
+          }
+          return true;
+        }
+        if (traverse(node.children)) return true;
+      }
+      return false;
+    };
+    if (traverse(newScene.nodes)) {
+      set({ sceneGraph: newScene });
+      get().recompile(newScene, id, true);
+    }
+  },
+
   updateNode: (id, updates) => {
     const newScene = JSON.parse(JSON.stringify(get().sceneGraph));
     const traverse = (nodes: any[]): boolean => {
@@ -804,8 +832,48 @@ export const useStore = create<PhysicsState>()((set, get) => ({
           faces: [0,11,5,0,5,1,0,1,7,0,7,10,0,10,11,1,5,9,5,11,4,11,10,2,10,7,6,7,1,8,3,9,4,3,4,2,3,2,6,3,6,8,3,8,9,4,9,5,2,4,11,6,2,10,8,6,7,9,8,1],
         }];
         joints = [{ name: `${id}_free`, type: 'free' }];
+      } else if (type === 'openscad') {
+        // Default cube shape, will compile into a custom CSG mesh on render/edit
+        geoms = [{
+          name: `${id}_geom`,
+          type: 'mesh',
+          size: [1],
+          rgba: [0.3, 0.6, 0.9, 1], // beautiful blue
+          mass: 1,
+          condim: 3,
+          dynamic: true,
+          vertices: [
+            -0.25, -0.25, -0.25,
+             0.25, -0.25, -0.25,
+             0.25,  0.25, -0.25,
+            -0.25,  0.25, -0.25,
+            -0.25, -0.25,  0.25,
+             0.25, -0.25,  0.25,
+             0.25,  0.25,  0.25,
+            -0.25,  0.25,  0.25
+          ],
+          renderVertices: [
+            -0.25,  0.25, -0.25,
+             0.25,  0.25, -0.25,
+             0.25,  0.25,  0.25,
+            -0.25,  0.25,  0.25,
+            -0.25, -0.25, -0.25,
+             0.25, -0.25, -0.25,
+             0.25, -0.25,  0.25,
+            -0.25, -0.25,  0.25
+          ],
+          faces: [
+            0, 2, 1,  0, 3, 2,
+            4, 5, 6,  4, 6, 7,
+            0, 1, 5,  0, 5, 4,
+            1, 2, 6,  1, 6, 5,
+            2, 3, 7,  2, 7, 6,
+            3, 0, 4,  3, 4, 7
+          ]
+        }];
+        joints = [{ name: `${id}_free`, type: 'free' }];
       }
-      if (type !== 'mesh') {
+      if (type !== 'mesh' && type !== 'openscad') {
         geoms = [{ name: `${id}_geom`, type: geomType, size, mass, rgba }];
       }
     }
@@ -831,6 +899,9 @@ export const useStore = create<PhysicsState>()((set, get) => ({
         pulleyWheelId: '',
         leftTargetId: '',
         rightTargetId: ''
+      } : {}),
+      ...(type === 'openscad' ? {
+        scad: `// Example OpenSCAD Code\ndifference() {\n  cube([0.5, 0.5, 0.5], center=true);\n  sphere(d=0.6, $fn=16);\n}`
       } : {}),
     };
 
